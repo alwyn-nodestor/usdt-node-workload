@@ -14,7 +14,7 @@
 #      `git pull` as usdt brings later changes)
 # Plus the packages the install stages need (git, curl, wget for the snapshot, gnupg, acl, logrotate, python3).
 #
-# Not done here (later root step, as for the forks): systemd units, the inbound firewall rule for port 18888, the
+# Not done here (later root step, as for the forks): systemd units and the
 # guard's sudoers rule. The usdt Postgres instance needs no root: it uses the installed PostgreSQL binaries.
 set -euo pipefail
 

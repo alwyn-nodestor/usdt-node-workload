@@ -1,6 +1,6 @@
 # blockline-usdt: Implementation Plan
 
-Date: 2026-11-07. Status: **revision 4, draft for review**. Sibling of `/home/debian/blockline-btc` (live, read-only
+Date: 2026-11-07. Status: **revision 4, draft for review** (amended 2026-11-07: ports and sweep freeze). Sibling of `/home/debian/blockline-btc` (live, read-only
 for this work) and `/home/zcash/blockline-zec`; same layout, runner, guards and verification habits. Revision 4 applies
 the owner's decisions of 2026-11-07 on revision 3: **extract once from a full node on this server, then go lite**
 (changelog at the end).
@@ -58,7 +58,7 @@ snapshot download of 3.5 TB or more. That is the accepted cost of this route.
 
 | Folder | Does | Output (under `data_root`) |
 |---|---|---|
-| `node/` | java-tron settings (full, then lite; history queries and internal transactions on), systemd unit, loopback-only HTTP and solidity APIs, peer limits, firewall rule for port 18888, the snapshot download (2.3), the go-lite conversion and the prune script (2.4) | `node/` |
+| `node/` | java-tron settings (full, then lite; history queries and internal transactions on), systemd unit, loopback-only HTTP and solidity APIs, peer limits, the peer-less freeze for the balance sweep (5), the snapshot download (2.3), the go-lite conversion and the prune script (2.4) | `node/` |
 | `etl/` | One ETL: reads solidified blocks from the local node in block order, from 0 to the head and then live. Writes Tier 2 | `tier2` |
 | `index/` | Address numbering, per-address stats, balances by block, counterparty edges, features | `foundation/tier3` |
 | `cluster/` | ut-v1: evidence edges, service detection, union-find with merge forest, report, quality, ablation | `clustering/ut-v1` |
@@ -99,7 +99,7 @@ snapshot download of 3.5 TB or more. That is the accepted cost of this route.
 - `vm.saveInternalTx = true` and `vm.saveFeaturedInternalTx = true` from the first start, so blocks processed locally
   during the catch-up keep their internal transactions.
 - History queries are on by default on a FullNode; Phase 0 confirms that `getblockbynum` and
-  `gettransactioninfobyblocknum` answer for a 2018 block and a 2019 block, on 8090 and 8091.
+  `gettransactioninfobyblocknum` answer for a 2018 block and a 2019 block, on 18090 and 18091.
 - **Earliest block with internal transactions** is recorded. If they start after block 0, the blocks before that
   have none locally. Producing them would mean replaying the chain from genesis, a much larger job. The gap is then
   stated in every report and the owner decides whether to replay (decision 11).
@@ -119,14 +119,16 @@ database. Allowed only when the gate in Phase 3 holds. This is irreversible with
   up offsite (9). The window opens after each epoch seal and lasts about 2.2 days in every 7; the runner schedules the
   prune on the day after a seal. Cadence follows the measured growth and the disk thresholds (10.2).
 
-**Both phases**: HTTP (8090) and solidity (8091) APIs on 127.0.0.1 only; no gRPC exposed. `node.maxConnections = 10`
-(default 30), `node.minConnections` below it (default 8). There is no switch to disable inbound connections, so inbound
-port 18888 is closed in the firewall. Node traffic is measured over 7 days, upload and download separately.
+**Both phases**: HTTP (18090) and solidity (18091) APIs on 127.0.0.1 only; java-tron's defaults 8090 / 8091 are not
+used, because blockline-btc's hot service already listens on 127.0.0.1:8090. No gRPC exposed. `node.maxConnections = 10`
+(default 30), `node.minConnections` below it (default 8). There is no switch to disable inbound connections. The AceCloud security group has no inbound
+rule for port 18888 (TCP or UDP), so inbound peers are blocked there (checked 2026-11-07: inbound allows only SSH from
+the admin IP and TCP 8333; outbound allows everything). No host firewall rule is needed; ufw stays off. Node traffic is measured over 7 days, upload and download separately.
 
 ### 2.5 Data root, ports, users
 
 `/srv/blockline-usdt`, owned by `usdt`, ACL for `debian`. If a dedicated disk is added later, the bootstrap mounts it
-there before creating the user, folders and rights. Node HTTP 127.0.0.1:8090, solidity HTTP 127.0.0.1:8091, dashboard
+there before creating the user, folders and rights. Node HTTP 127.0.0.1:18090, solidity HTTP 127.0.0.1:18091, dashboard
 127.0.0.1:8288, Postgres on a Unix socket and 127.0.0.1 (port set at install). Traffic is counted once for the whole
 host in `/srv/blockline-shared/bandwidth.json` (the BTC guard's ledger, shared as for the forks). When USDT reaches its
 share of the month, the guard stops offsite backup uploads first and the node last (because stopping the node stops
@@ -134,7 +136,7 @@ watchlist alerts). The ETL itself uses no traffic.
 
 ### 2.6 Ingestion
 
-- **One ETL, block order**: poll the solidity API on loopback (port 8091), one solidified block at a time:
+- **One ETL, block order**: poll the solidity API on loopback (port 18091), one solidified block at a time:
   `/walletsolidity/getblockbynum` (header, transactions, contract types, owners) and
   `/walletsolidity/gettransactioninfobyblocknum` (logs, internal transactions, energy, fees, result). It starts at
   block 0, and when it reaches the solidified head it simply keeps following it. There is no separate backfill and no
@@ -147,7 +149,7 @@ watchlist alerts). The ETL itself uses no traffic.
 - **Speed target**: the full extraction must project to 21 days or less (Phase 0 gate). About 87.7M blocks in 21 days is
   about 48 blocks/s sustained, about 100 local HTTP calls/s, while the node is also catching up. This is measured, not
   assumed.
-- **Head**: the hot layer reads the head (port 8090) for watchlist alerts, about 19 blocks earlier than the solidified
+- **Head**: the hot layer reads the head (port 18090) for watchlist alerts, about 19 blocks earlier than the solidified
   data. An alert on a block that is later dropped by a fork is retracted.
 
 ## 3. Data model
@@ -156,7 +158,7 @@ watchlist alerts). The ETL itself uses no traffic.
 
 Epochs are defined by block number from block 0: epoch k holds blocks [k × 201,600, (k + 1) × 201,600). That is about
 7 days, but not exactly, because of missed slots. A block is final when it is at or below the node's **solidified**
-block (`/walletsolidity/getnowblock` on port 8091; 70% of 27 SRs = 19 blocks, typically about 1 minute, with no fixed
+block (`/walletsolidity/getnowblock` on port 18091; 70% of 27 SRs = 19 blocks, typically about 1 minute, with no fixed
 upper bound). An epoch is sealed by the ETL when its last block is solidified plus a margin of 1,000 blocks. Sealed
 epochs are immutable; `hot/` holds everything newer and is rebuilt from the node after any fork.
 
@@ -272,7 +274,7 @@ ETL and the rebuild.
 |---|---|
 | **Supply**: initial supply + Σ`Transfer` from 0x0 − Σ`Transfer` to 0x0 − Σ`DestroyedBlackFunds` = Σ rebuilt balances = `totalSupply()`; and every `Issue` / `Redeem` matches one mint / burn `Transfer` | mints, burns, destroys and the initial supply are handled correctly. **Only that**: transfers conserve the sum of balances, so a missing or doubled transfer passes this check |
 | **No negative balance**: every address ≥ 0 after every block during the rebuild | catches missing credits or doubled debits wherever they make a balance negative |
-| **Full `balanceOf` sweep** for every address that ever held USDT (about 75M hold USDT now, Jun 2026; more have ever held it), against the rebuilt balance, run once before go-lite at a **frozen height**: outbound port 18888 is blocked so the node stops syncing, the height H is recorded, the sweep runs, the port is reopened | per-address correctness at H for every balance; the main completeness check |
+| **Full `balanceOf` sweep** for every address that ever held USDT (about 75M hold USDT now, Jun 2026; more have ever held it), against the rebuilt balance, run once before go-lite at a **frozen height**: the node is restarted peer-less (below), the height H is recorded, the sweep runs, the node is restarted with its normal peer settings and catches up | per-address correctness at H for every balance; the main completeness check |
 | **Daily head sample**: 10,000 addresses (all large holders + random) through the local node. The head is recorded before and after each batch; any address with a transfer between the two is checked again | per-address correctness of the live era |
 | **Continuity**: every block number from 0 to the head has a header row, and each header's parent hash is the previous block's ID | no holes, no fork mixed in |
 | **Fingerprints**: per epoch, a hash of each sealed Tier 2 table, over rows in key order | two builds, or two machines, agree |
@@ -280,6 +282,15 @@ ETL and the rebuild.
 
 A sealed epoch that fails continuity or the no-negative-balance check does not enter Tier 3. Phase 2 requires zero
 gaps.
+
+**Peer-less freeze** (for the full sweep). The firewall is not used for this: outbound is a single allow-all rule in the
+AceCloud security group, and some peers listen on ports other than 18888. Instead `node/freeze.sh` stops the node,
+restarts it with a freeze config overlay (peer discovery off, empty seed and active-node lists, no persisted peers
+loaded, `node.maxConnections` at its lowest accepted value), checks for 10 minutes that the solidified height does not
+move and that `listnodes` / `getnodeinfo` show no connected peer, then records H. `node/freeze.sh --release` restarts it
+with the normal config. The exact java-tron keys that keep a node peer-less are a Phase 0 open item. If the height
+still moves, the sweep is refused until the freeze works. Watchlist alerts pause during the freeze (the hot layer sees
+no new blocks); the ETL loses nothing and catches up after the release.
 
 ## 6. Clustering: ut-v1
 
@@ -498,6 +509,8 @@ which the forks are paused and the host disk is near its peak.
 - [ ] Current `basisPointsRate`, `maximumFee` and `deprecated` flag.
 - [ ] Token flow of one GasFree transaction: `transferFrom` or a wallet-contract transfer, and what `from` shows.
 - [ ] `getnodeinfo` exposes the solidified block number.
+- [ ] The java-tron settings that keep a node peer-less, and that a restart with them leaves the solidified height
+      unchanged (section 5).
 - [ ] Number of addresses that ever held USDT, and cumulative transfers since 2019 (from the extraction).
 - [ ] Host figures of 10.1.
 
@@ -552,7 +565,7 @@ All from the owner's decisions of 2026-11-07. Revision 3's changes are in git hi
 5. One ETL from block 0 through the head and onwards; no separate backfill, no seam, no manifest (2.6, 3.1).
 6. Tier 1 dropped; Tier 2 is the record, a new snapshot download is the rebuild source; field review before the history
    run, because history is extracted only once (3.2, 3.3).
-7. Checks: per-block aggregates removed; full `balanceOf` sweep at a frozen height before go-lite (peer port blocked);
+7. Checks: per-block aggregates removed; full `balanceOf` sweep at a frozen height before go-lite (node restarted peer-less);
    optional manual Tronscan spot checks (5).
 8. Traffic re-budgeted: month 1 about 3.8–4.2 TB, handled with AceCloud; after that 350 GB a month for USDT; shed order
    backups first, node last (2.5, 10.3).
@@ -566,3 +579,11 @@ All from the owner's decisions of 2026-11-07. Revision 3's changes are in git hi
 15. Phases renumbered 0–7, with history extraction (2) and go-lite (3) as their own phases (11).
 16. Open decisions 11–15 added: internal-transaction gap, AceCloud answers, backups before go-lite, download retries,
     forks pause (12).
+
+### Amendment of 2026-11-07
+
+17. Node APIs moved to 127.0.0.1:18090 (HTTP) and 127.0.0.1:18091 (solidity): blockline-btc's hot service already
+    listens on 127.0.0.1:8090 (2.4, 2.5, 2.6, 3.1).
+18. Inbound 18888 is blocked by the AceCloud security group (no allow rule); no host firewall rule (2.2, 2.4).
+19. The frozen-height sweep freezes the node by restarting it peer-less instead of blocking the peer port; keys to
+    confirm in Phase 0 (5, 11).

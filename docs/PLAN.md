@@ -1,6 +1,6 @@
 # blockline-usdt: Implementation Plan
 
-Date: 2026-11-07. Status: **revision 4, draft for review** (amended 2026-11-07: ports and sweep freeze). Sibling of `/home/debian/blockline-btc` (live, read-only
+Date: 2026-11-07. Status: **revision 4, draft for review** (amended 2026-11-07: ports, sweep freeze, node code). Sibling of `/home/debian/blockline-btc` (live, read-only
 for this work) and `/home/zcash/blockline-zec`; same layout, runner, guards and verification habits. Revision 4 applies
 the owner's decisions of 2026-11-07 on revision 3: **extract once from a full node on this server, then go lite**
 (changelog at the end).
@@ -40,21 +40,28 @@ nodes, paid data sources (BigQuery, SQD, commercial exports, TronGrid).
 
 ### 2.1 How the data gets here
 
-1. **Download once**: the official FullNode snapshot with internal transactions (about 3.54 TB compressed, Sep 2026),
-   streamed straight into the node directory (2.3). Free data; the cost is one-off traffic (10.3).
-2. **Full node, temporarily**: java-tron starts on the extracted database and catches up to the head (about 1.7M blocks
-   from 18 Sep, estimate). The ETL reads every block from 0 to the head from this local node.
+1. **Download once**: the official FullNode snapshot with internal transactions (`backup20261106`, 3.93 TB
+   compressed, measured 2026-11-07), streamed straight into the node directory (2.3). Free data; the cost is one-off
+   traffic (10.3).
+2. **Full node, temporarily**: java-tron starts on the extracted database and catches up to the head (the snapshot is
+   from 2026-11-06, so about a day of blocks per day it waits). The ETL reads every block from 0 to the head from this local node.
 3. **Extract once**: Tier 2 for every block (3.3), checked (section 5).
 4. **Go lite**: once the extraction is complete and checked, the node is converted to a Lite FullNode with
-   `Toolkit.jar db lite`, freeing about 3.5 TB. The ETL keeps following the head from the lite node.
+   `Toolkit.jar db lite`, freeing about 4 TB. The ETL keeps following the head from the lite node.
 
 From then on, the extracted tables are the history. Anything not extracted (a new token, a new field) needs a new
-snapshot download of 3.5 TB or more. That is the accepted cost of this route.
+snapshot download of about 4 TB. That is the accepted cost of this route.
 
 ### 2.2 Repo and layout
 
 `/home/debian/projects/blockline-usdt` during the draft, then `/home/usdt/blockline-usdt` owned by a `usdt` Linux user
 (created by the sudo bootstrap, decision 4). Data root `/srv/blockline-usdt`.
+
+**Written so far** (see `docs/NODE.md`): `bootstrap/usdt-bootstrap.sh` (the one root step: user, data root, clone,
+systemd units, sudoers), `lib/usdt_node.py` behind `bin/blockline-usdt` (`install`: pinned JDK 8, java-tron jars and
+config; `snapshot`: the stream of 2.3; `status`), and `systemd/` (the snapshot unit, which starts the node unit once the
+snapshot is verified). The folders below are the target layout; the node rows of `node/` and `install/` live in these
+files for now.
 
 | Folder | Does | Output (under `data_root`) |
 |---|---|---|
@@ -74,19 +81,16 @@ snapshot download of 3.5 TB or more. That is the accepted cost of this route.
 
 ### 2.3 Snapshot download
 
-- One connection only: the mirror warns that parallel or segmented downloads get 404s, and its page does not mention
-  resuming. A broken download restarts from zero.
-- Stream into the extractor, computing the checksum on the way, because storing the archive and then extracting it
-  needs about 7 TB:
-
-  ```
-  wget -q -O - http://35.247.128.170/<path>/FullNode_output-directory.tgz \
-    | tee >(md5sum > got.md5) | tar -xzf - -C /srv/blockline-usdt/node
-  ```
-
-- The published `.md5sum` file is fetched **before** the download starts and again after it ends. If the two differ,
-  the mirror replaced the file mid-download, and the result is discarded. If `got.md5` does not match, everything is
-  deleted and downloaded again. The script refuses to start the node until the checksum matches.
+- File: `http://35.247.128.170/backup20261106/FullNode_output-directory.tgz`, 3,926,337,977,624 bytes, published md5
+  `72a47d2c4e600c37e63d2f1acfc9256e` (measured 2026-11-07). About 29.5 MB/s in a 20 s sample, so about 37 hours.
+- One connection only: the mirror warns that parallel or segmented downloads get 404s. A dropped connection is resumed
+  at the byte it stopped with an HTTP Range request, still one connection at a time; the resume is refused unless the
+  server answers 206 with the right `Content-Range`.
+- Streamed into `tar`, with the md5 computed on the way (`blockline-usdt snapshot`), because storing the archive and
+  then extracting it needs about 8 TB. It stops if free disk would fall below 200 GB.
+- If the md5 does not match the published one, or the archive has no `output-directory/database`, the run fails and
+  the next run deletes the partial extraction and downloads again. Only a match writes `.snapshot-verified`; the node
+  unit refuses to start without it (`ConditionPathExists`).
 - First test once the node starts: the earliest block with internal transactions (2.4). The snapshot page does not
   say where they begin.
 
@@ -119,16 +123,18 @@ database. Allowed only when the gate in Phase 3 holds. This is irreversible with
   up offsite (9). The window opens after each epoch seal and lasts about 2.2 days in every 7; the runner schedules the
   prune on the day after a seal. Cadence follows the measured growth and the disk thresholds (10.2).
 
-**Both phases**: HTTP (18090) and solidity (18091) APIs on 127.0.0.1 only; java-tron's defaults 8090 / 8091 are not
-used, because blockline-btc's hot service already listens on 127.0.0.1:8090. No gRPC exposed. `node.maxConnections = 10`
+**Both phases**: HTTP 18090, solidity 18091, gRPC 50551 / 50561; java-tron's defaults 8090 / 8091 / 50051 / 50061 are
+not used, because blockline-btc's hot service already listens on 127.0.0.1:8090. java-tron has no bind-address setting,
+so these listen on every interface; the AceCloud security group has no inbound rule for any of them, so none is
+reachable from outside. PBFT APIs are off. Heap 12 GB, unit capped at 24 GB (`MemoryMax`), `IPAccounting` on for the
+node's own traffic. `node.maxConnections = 10`
 (default 30), `node.minConnections` below it (default 8). There is no switch to disable inbound connections. The AceCloud security group has no inbound
 rule for port 18888 (TCP or UDP), so inbound peers are blocked there (checked 2026-11-07: inbound allows only SSH from
 the admin IP and TCP 8333; outbound allows everything). No host firewall rule is needed; ufw stays off. Node traffic is measured over 7 days, upload and download separately.
 
 ### 2.5 Data root, ports, users
 
-`/srv/blockline-usdt`, owned by `usdt`, ACL for `debian`. If a dedicated disk is added later, the bootstrap mounts it
-there before creating the user, folders and rights. Node HTTP 127.0.0.1:18090, solidity HTTP 127.0.0.1:18091, dashboard
+`/srv/blockline-usdt`, owned by `usdt`, ACL for `debian`. Node HTTP 18090, solidity HTTP 18091, gRPC 50551 / 50561, dashboard
 127.0.0.1:8288, Postgres on a Unix socket and 127.0.0.1 (port set at install). Traffic is counted once for the whole
 host in `/srv/blockline-shared/bandwidth.json` (the BTC guard's ledger, shared as for the forks). When USDT reaches its
 share of the month, the guard stops offsite backup uploads first and the node last (because stopping the node stops
@@ -426,15 +432,17 @@ All figures are estimates, measured in Phase 0 and the full phase.
 
 | Item | Full phase (peak) | After go-lite |
 |---|---|---|
-| Node | about 3.6–4.0 TB extracted, plus catch-up growth | about 0.1 TB, then about 1 TB/year between prunes |
+| Node | about 4.1 TB extracted (3.93 TB archive), plus catch-up growth | about 0.1 TB, then about 1 TB/year between prunes |
 | Prune scratch (transient) | — (no pruning) | about 2× the node database |
 | Tier 2 + Tier 3, history and live | 0.4–0.8 TB | 0.4–0.8 TB, growing |
 | Postgres `usdt` | — (loaded after go-lite) | 0.6–1.0 TB |
 | Clustering working space | — | about 0.1 TB |
-| **Sum** | **about 4.0–4.8 TB (owner estimate 4.6 TB)** | **about 1.2–2.2 TB plus node growth and prune scratch** |
+| **Sum** | **about 4.5–4.9 TB** | **about 1.2–2.2 TB plus node growth and prune scratch** |
 
 No new disk is needed. The full phase uses most of the 5.5 TB free, so **the forks pause** from the start of the
-download until go-lite (10.5). Postgres and clustering wait until after go-lite so that the peak stays at the node plus
+download until go-lite (10.5). The root filesystem is 10.3 TB with 4.3 TB used, so the full-phase peak takes it to about
+8.8–9.2 TB, 85–89%: past the 80% alert and close to the 90% pause, which therefore applies to the whole disk, not only
+to USDT. Postgres and clustering wait until after go-lite so that the peak stays at the node plus
 Tier 2.
 
 ### 10.3 Traffic
@@ -442,15 +450,17 @@ Tier 2.
 | | Month 1 (download and catch-up) | Steady month |
 |---|---|---|
 | BTC (measured) | 40 GB | 40 GB |
-| Snapshot download | 3.54 TB once (more if a download breaks and restarts) | — |
-| Node catch-up from 18 Sep / node in steady state | 0.2–0.6 TB (owner estimate) | up to 300 GB |
+| Snapshot download | 3.93 TB once (a dropped connection resumes; only an md5 mismatch downloads it again) | — |
+| Node catch-up from 6 Nov / node in steady state | a few GB to tens of GB, then up to 300 GB a month | up to 300 GB |
 | Offsite backups | — | up to 50 GB |
-| **Sum** | **about 3.8–4.2 TB, about four times the 1 TB cap** | **up to 390 GB; about 610 GB left for the forks** |
+| **Sum** | **about 4.0–4.3 TB, about four times the 1 TB cap** | **up to 390 GB; about 610 GB left for the forks** |
 
 - First question to AceCloud: whether incoming traffic counts against the 1 TB cap (many providers count only
-  outgoing). If it counts: a one-off top-up or a temporary unmetered month.
+  outgoing). If it counts: a one-off top-up or a temporary unmetered month. Management has cleared going over the cap
+  for the download (`docs/NODE.md`), and on 2026-11-07 the owner turned the host guards' cap off for November
+  (`limits_off_months = ["2026-11"]` in the BTC and ZEC configs; traffic is still counted).
 - The download is not spread over months under the cap: a streamed download cannot pause for months, the
-  store-then-extract route needs 7 TB of disk, and the mirror may replace the September file before it finishes.
+  store-then-extract route needs 7 TB of disk, and the mirror may replace the file before it finishes.
 - After month 1, USDT's share is 350 GB a month: node up to 300 GB, backups up to 50 GB.
 
 ### 10.4 Money
@@ -464,8 +474,8 @@ Tier 2.
 
 ### 10.5 Timeline of the full phase (estimate)
 
-Download (3.54 TB on one connection: days, measured) + catch-up (about 1.7M blocks at 2 blocks/s is about 10 days) +
-full extraction (21 days or less, gate) + checks and the frozen-height sweep + go-lite. About 5–7 weeks in total, during
+Download (3.93 TB on one connection, about 37 hours at the measured rate) + catch-up (about a day of blocks) + full
+extraction (21 days or less, gate) + checks and the frozen-height sweep + go-lite. About 4–5 weeks in total, during
 which the forks are paused and the host disk is near its peak.
 
 ## 11. Phases
@@ -523,8 +533,8 @@ which the forks are paused and the host disk is near its peak.
 2. **TRX-side accounts**: all accounts, from block 0.
 3. **Traffic**: month 1 about 4 TB, handled with AceCloud (10.3); after month 1, 350 GB a month for USDT (node 300,
    backups 50); backups stop first, the node last.
-4. **Bootstrap**: one sudo script as for the forks; it mounts a dedicated disk at `/srv/blockline-usdt` first if one
-   is ever added.
+4. **Bootstrap**: one sudo script as for the forks (`bootstrap/usdt-bootstrap.sh`). No dedicated disk on this
+   route (decision 6), so it mounts nothing.
 5. **Platform database**: its own Postgres instance, not the wallex one; read-only role or `postgres_fdw` for wallex.
 6. **Disk**: extract once, then go lite. No dedicated disk; the forks pause during the full phase. Alert at 80%,
    pause clustering and Postgres loads at 90%. No pruning while the node is the history source. Tier 1 dropped.
@@ -547,9 +557,9 @@ which the forks are paused and the host disk is near its peak.
     means downloading the snapshot again and re-running the extraction. Choose: a temporary larger backup share (or a
     one-off top-up) so the upload finishes before go-lite; or go lite first and accept that risk for the months the
     upload takes.
-14. **Download retries**: a broken download restarts from zero and costs another 3.54 TB of traffic if incoming
-    counts. How many attempts the month-1 traffic budget covers.
-15. **Forks pause**: confirm the forks can pause for the 5–7 weeks of 10.5.
+14. **Download retries**: a dropped connection resumes, but an md5 mismatch means another 3.93 TB of traffic. How many
+    full attempts the month-1 traffic budget covers.
+15. **Forks pause**: confirm the forks can pause for the 4–5 weeks of 10.5.
 
 ## Changes from revision 3
 
@@ -587,3 +597,9 @@ All from the owner's decisions of 2026-11-07. Revision 3's changes are in git hi
 18. Inbound 18888 is blocked by the AceCloud security group (no allow rule); no host firewall rule (2.2, 2.4).
 19. The frozen-height sweep freezes the node by restarting it peer-less instead of blocking the peer port; keys to
     confirm in Phase 0 (5, 11).
+20. The node code of `8fa5561` adopted and aligned with the plan: ports 18090 / 18091, no host firewall (the AceCloud
+    security group), heap 12 GB and cap 24 GB, one bootstrap (`bootstrap/usdt-bootstrap.sh`; `install/bootstrap.sh`
+    removed) (2.2, 2.4, 2.5, decision 4).
+21. Snapshot measured: `backup20261106`, 3.93 TB, about 37 hours; resumes dropped connections by HTTP Range; disk,
+    traffic and timeline re-summed (2.1, 2.3, 10.2, 10.3, 10.5, decisions 14 and 15).
+22. The November cap is off in the host guards (10.3).

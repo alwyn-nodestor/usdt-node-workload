@@ -1,8 +1,9 @@
 """blockline-usdt node tooling: install the pinned runtime, render the node config, stream the snapshot, report status.
 
 Runs as the unprivileged `usdt` user, standard library only. Every download is pinned by sha256 (and the java-tron jars
-also by TRON's release GPG key when a keyserver is reachable). Nothing here needs root; the systemd units and the
-firewall rule come from bootstrap/usdt-bootstrap.sh.
+also by TRON's release GPG key when a keyserver is reachable). Nothing here needs root; the systemd units come from
+bootstrap/usdt-bootstrap.sh. No host firewall: the AceCloud security group allows inbound only SSH and TCP 8333, so the
+node's APIs and inbound peer port 18888 are unreachable from outside (PLAN.md 2.4).
 
   blockline-usdt install     JDK 8, FullNode.jar, Toolkit.jar, node/config.conf
   blockline-usdt snapshot    stream the FullNode snapshot (with internal transactions) into the node directory and
@@ -48,8 +49,9 @@ SNAPSHOT = {  # official TRON mirror; FullNode snapshot WITH internal transactio
     "file": "FullNode_output-directory.tgz",
 }
 
-# Ports: 8090 on this host is taken by blockline-btc's hot service, so the node uses 85xx/505xx.
-HTTP_PORT, SOLIDITY_PORT, RPC_PORT, RPC_SOLIDITY_PORT = 8590, 8591, 50551, 50561
+# Ports (PLAN.md 2.4): 8090 on this host is blockline-btc's hot service, so HTTP 18090 / solidity 18091; gRPC 505x1.
+# java-tron binds them to every interface; the AceCloud security group has no inbound rule for any of them.
+HTTP_PORT, SOLIDITY_PORT, RPC_PORT, RPC_SOLIDITY_PORT = 18090, 18091, 50551, 50561
 
 # Edits to the official config: (exact text, replacement). Each must match exactly once, so an upstream change to the
 # file fails loudly here instead of silently leaving a default in place.
@@ -68,6 +70,9 @@ CONFIG_EDITS = [
      "  saveInternalTx = true\n  saveFeaturedInternalTx = true\n  saveCancelAllUnfreezeV2Details = true\n"),
 ]
 CONFIG_REQUIRED = ['transHistory.switch = "on"', 'db.engine = "LEVELDB"']
+# Appended after the release file (HOCON merges a later node {} into the earlier one). Not in the release config.
+# No effect on a full node; it keeps getblockbynum / gettransactioninfobyblocknum open after go-lite (PLAN.md 2.4).
+CONFIG_APPEND = "\n# blockline-usdt (lib/usdt_node.py)\nnode {\n  openHistoryQueryWhenLiteFN = true\n}\n"
 
 DISK_RESERVE = int(os.environ.get("BLOCKLINE_USDT_DISK_RESERVE", 200 * 1024**3))  # the snapshot stream stops if the disk would drop below this
 CHUNK = 4 * 1024 * 1024
@@ -139,6 +144,9 @@ def render_config():
     for needed in CONFIG_REQUIRED:
         if needed not in text:
             sys.exit(f"config is missing {needed}")
+    if "openHistoryQueryWhenLiteFN" in text:
+        sys.exit("the release config now sets openHistoryQueryWhenLiteFN itself: turn CONFIG_APPEND into an edit")
+    text = text.rstrip("\n") + "\n" + CONFIG_APPEND
     NODE.mkdir(parents=True, exist_ok=True)
     out = NODE / "config.conf"
     out.write_text(f"# Rendered by blockline-usdt install from {JAVA_TRON_TAG} config.conf; edits in lib/usdt_node.py\n" + text)

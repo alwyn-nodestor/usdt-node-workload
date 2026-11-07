@@ -2,13 +2,13 @@
 # One-time root setup for blockline-usdt. Run once:  sudo bash /home/debian/projects/blockline-usdt/bootstrap/usdt-bootstrap.sh
 # Idempotent: safe to run again. Downloads no chain data and starts no node.
 #
-#   1. packages: curl, acl, gnupg (java-tron release signatures), nftables, python3, git
+#   1. packages: curl, acl, gnupg (java-tron release signatures), python3, git
 #   2. the unprivileged user `usdt` (no sudo of its own) and the data root /srv/blockline-usdt owned by it
 #   3. lets `debian` work on usdt's files (ACLs) and run commands as usdt (sudo -u usdt, no password) — usdt's rights
 #      only, never root — and lets debian and usdt start/stop/restart the blockline-usdt units, nothing else
 #   4. clones this repository into /home/usdt/blockline-usdt (origin = the debian working copy, so `git pull` updates)
-#   5. installs the systemd units (snapshot, node, firewall); enables the firewall now and the node at boot.
-#      The node unit refuses to start until the snapshot is verified.
+#   5. installs the systemd units (snapshot, node) and enables the node at boot. The node unit refuses to start until
+#      the snapshot is verified. No host firewall: the AceCloud security group blocks inbound (PLAN.md 2.4).
 #
 # Next (as debian):  sudo -u usdt /home/usdt/blockline-usdt/bin/blockline-usdt install
 #                    sudo systemctl start blockline-usdt-snapshot     # ~1.5 days; starts the node when verified
@@ -20,7 +20,7 @@ REPO=/home/usdt/blockline-usdt
 
 echo "== packages"
 apt-get update -q
-DEBIAN_FRONTEND=noninteractive apt-get install -y -q git curl gnupg acl ca-certificates nftables python3
+DEBIAN_FRONTEND=noninteractive apt-get install -y -q git curl gnupg acl ca-certificates python3
 
 echo "== user and data root"
 id usdt >/dev/null 2>&1 || useradd --create-home --shell /bin/bash usdt
@@ -42,7 +42,8 @@ else
 fi
 setfacl -m u:usdt:x /home/debian /home/debian/projects
 setfacl -R -m u:usdt:rX "$SRC"
-runuser -u usdt -- git config --global --add safe.directory "$SRC"
+runuser -u usdt -- git config --global --get-all safe.directory | grep -qxF "$SRC" \
+  || runuser -u usdt -- git config --global --add safe.directory "$SRC"
 
 echo "== debian may act as usdt"
 for d in /home/usdt "$ROOT"; do
@@ -50,17 +51,15 @@ for d in /home/usdt "$ROOT"; do
   find "$d" -type d -exec setfacl -m d:u:debian:rwX -m d:u:usdt:rwX {} +
 done
 
-echo "== systemd units and firewall"
-install -d -m 755 /etc/blockline-usdt
-install -m 644 "$REPO/systemd/firewall.nft" /etc/blockline-usdt/firewall.nft
-for unit in blockline-usdt-snapshot.service blockline-usdt-node.service blockline-usdt-firewall.service; do
+echo "== systemd units"
+for unit in blockline-usdt-snapshot.service blockline-usdt-node.service; do
   install -m 644 "$REPO/systemd/$unit" "/etc/systemd/system/$unit"
 done
 systemctl daemon-reload
-systemctl enable --now blockline-usdt-firewall.service
 systemctl enable blockline-usdt-node.service    # starts at boot once the snapshot is verified; not started now
 
-cat > /etc/sudoers.d/blockline-usdt <<'RULES'
+sudoers_tmp=$(mktemp); trap 'rm -f "$sudoers_tmp"' EXIT
+cat > "$sudoers_tmp" <<'RULES'
 # blockline-usdt: debian may run commands as the unprivileged usdt user (not as root)
 debian ALL=(usdt) NOPASSWD: ALL
 # debian and usdt may operate the blockline-usdt units, and nothing else as root
@@ -74,8 +73,9 @@ Cmnd_Alias USDT_UNITS = /usr/bin/systemctl start blockline-usdt-snapshot.service
   /usr/bin/systemctl restart blockline-usdt-node
 debian, usdt ALL=(root) NOPASSWD: USDT_UNITS
 RULES
-chmod 440 /etc/sudoers.d/blockline-usdt
-visudo -cf /etc/sudoers.d/blockline-usdt
+# checked before it is installed: a broken file in /etc/sudoers.d would break sudo for everyone
+visudo -cf "$sudoers_tmp"
+install -m 0440 "$sudoers_tmp" /etc/sudoers.d/blockline-usdt
 
 echo "== done. Next, as debian:"
 echo "   sudo -u usdt $REPO/bin/blockline-usdt install"

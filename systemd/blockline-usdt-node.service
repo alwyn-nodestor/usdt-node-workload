@@ -1,7 +1,7 @@
 [Unit]
 Description=blockline-usdt: java-tron FullNode (USDT and TRX history source)
-Wants=network-online.target blockline-usdt-firewall.service
-After=network-online.target blockline-usdt-firewall.service
+Wants=network-online.target
+After=network-online.target
 # Never start on a partial or unverified snapshot.
 ConditionPathExists=/srv/blockline-usdt/node/.snapshot-verified
 
@@ -9,9 +9,10 @@ ConditionPathExists=/srv/blockline-usdt/node/.snapshot-verified
 User=usdt
 Group=usdt
 WorkingDirectory=/srv/blockline-usdt/node
-# JDK 8 flags from the java-tron deployment guide; heap capped at 24 GB (plan 2.2), revisited after measuring.
+# JDK 8 flags from the java-tron deployment guide. Heap 12 GB, unit capped at 24 GB (PLAN.md 2.4 and the RAM guard
+# in section 9); revisited after the catch-up measurement.
 ExecStart=/srv/blockline-usdt/jdk/bin/java \
-  -Xms8g -Xmx24g \
+  -Xms12g -Xmx12g \
   -XX:+UseConcMarkSweepGC -XX:+CMSParallelRemarkEnabled -XX:+UseCMSInitiatingOccupancyOnly \
   -XX:CMSInitiatingOccupancyFraction=70 -XX:NewRatio=2 \
   -XX:ReservedCodeCacheSize=256m -XX:+UseCodeCacheFlushing \
@@ -27,8 +28,10 @@ Restart=on-failure
 RestartSec=60
 LimitNOFILE=500000
 # Heap plus LevelDB's off-heap caches. The host has 251 GB and runs BTC, wallex and the forks too.
-MemoryHigh=40G
-MemoryMax=56G
+MemoryHigh=20G
+MemoryMax=24G
+# the node's own traffic: systemctl show -p IPIngressBytes -p IPEgressBytes blockline-usdt-node
+IPAccounting=yes
 Nice=5
 
 [Install]

@@ -42,8 +42,11 @@ else
 fi
 setfacl -m u:usdt:x /home/debian /home/debian/projects
 setfacl -R -m u:usdt:rX "$SRC"
-runuser -u usdt -- git config --global --get-all safe.directory | grep -qxF "$SRC" \
-  || runuser -u usdt -- git config --global --add safe.directory "$SRC"
+# both forms: `git pull` from the clone checks the .git path of the source
+for p in "$SRC" "$SRC/.git"; do
+  runuser -u usdt -- git config --global --get-all safe.directory | grep -qxF "$p" \
+    || runuser -u usdt -- git config --global --add safe.directory "$p"
+done
 
 echo "== debian may act as usdt"
 for d in /home/usdt "$ROOT"; do

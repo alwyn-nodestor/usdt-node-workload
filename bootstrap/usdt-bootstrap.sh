@@ -7,8 +7,8 @@
 #   3. lets `debian` work on usdt's files (ACLs) and run commands as usdt (sudo -u usdt, no password) — usdt's rights
 #      only, never root — and lets debian and usdt start/stop/restart the blockline-usdt units, nothing else
 #   4. clones this repository into /home/usdt/blockline-usdt (origin = the debian working copy, so `git pull` updates)
-#   5. installs the systemd units (snapshot, node) and enables the node at boot. The node unit refuses to start until
-#      the snapshot is verified. No host firewall: the AceCloud security group blocks inbound (PLAN.md 2.4).
+#   5. installs the systemd units (snapshot, node, dashboard), enables the node at boot and starts the status page on
+#      127.0.0.1:8288. The node unit refuses to start until the snapshot is verified. No host firewall: the AceCloud security group blocks inbound (PLAN.md 2.4).
 #
 # Next (as debian):  sudo -u usdt /home/usdt/blockline-usdt/bin/blockline-usdt install
 #                    sudo systemctl start blockline-usdt-snapshot     # ~1.5 days; starts the node when verified
@@ -52,11 +52,13 @@ for d in /home/usdt "$ROOT"; do
 done
 
 echo "== systemd units"
-for unit in blockline-usdt-snapshot.service blockline-usdt-node.service; do
+for unit in blockline-usdt-snapshot.service blockline-usdt-node.service blockline-usdt-dashboard.service; do
   install -m 644 "$REPO/systemd/$unit" "/etc/systemd/system/$unit"
 done
 systemctl daemon-reload
 systemctl enable blockline-usdt-node.service    # starts at boot once the snapshot is verified; not started now
+systemctl enable blockline-usdt-dashboard.service
+systemctl restart blockline-usdt-dashboard.service   # read-only status page, 127.0.0.1:8288
 
 sudoers_tmp=$(mktemp); trap 'rm -f "$sudoers_tmp"' EXIT
 cat > "$sudoers_tmp" <<'RULES'
@@ -70,13 +72,15 @@ Cmnd_Alias USDT_UNITS = /usr/bin/systemctl start blockline-usdt-snapshot.service
   /usr/bin/systemctl restart blockline-usdt-node.service, \
   /usr/bin/systemctl start blockline-usdt-snapshot, /usr/bin/systemctl stop blockline-usdt-snapshot, \
   /usr/bin/systemctl start blockline-usdt-node, /usr/bin/systemctl stop blockline-usdt-node, \
-  /usr/bin/systemctl restart blockline-usdt-node
+  /usr/bin/systemctl restart blockline-usdt-node, \
+  /usr/bin/systemctl restart blockline-usdt-dashboard.service, /usr/bin/systemctl restart blockline-usdt-dashboard
 debian, usdt ALL=(root) NOPASSWD: USDT_UNITS
 RULES
 # checked before it is installed: a broken file in /etc/sudoers.d would break sudo for everyone
 visudo -cf "$sudoers_tmp"
 install -m 0440 "$sudoers_tmp" /etc/sudoers.d/blockline-usdt
 
-echo "== done. Next, as debian:"
+echo "== done. Status page: ssh -L 8288:127.0.0.1:8288 debian@<server>, then http://localhost:8288"
+echo "   Next, as debian:"
 echo "   sudo -u usdt $REPO/bin/blockline-usdt install"
 echo "   sudo systemctl start blockline-usdt-snapshot"

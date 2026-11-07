@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>blockline-usdt status</title>
+<style>
+:root {
+  --bg: #f6f7f9; --card: #ffffff; --ink: #1b1f24; --muted: #67707c; --line: #e2e5ea;
+  --ok: #1f8a4c; --warn: #b7791f; --bad: #c53030; --info: #2b6cb0; --idle: #a0a8b3;
+  --bar: #e9ecf0; --fill: #2b6cb0;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1216; --card: #171b21; --ink: #e6e9ee; --muted: #8b95a3; --line: #262c35;
+    --ok: #48bb78; --warn: #ecc94b; --bad: #fc8181; --info: #63b3ed; --idle: #5a6472;
+    --bar: #232932; --fill: #63b3ed;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; padding: 18px 20px 6px; }
+header h1 { font-size: 18px; margin: 0; letter-spacing: .2px; }
+header .sub { color: var(--muted); font-size: 13px; }
+header .clock { margin-left: auto; color: var(--muted); font-size: 12px; font-family: var(--mono); }
+main { padding: 8px 20px 28px; display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+.card.wide { grid-column: 1 / -1; }
+.card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+.card h2 .pill { margin-left: auto; }
+.pill { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; text-transform: none; letter-spacing: 0; border: 1px solid currentColor; }
+.ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); } .info { color: var(--info); } .idle { color: var(--idle); }
+.big { font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin-top: 8px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.bar { height: 10px; background: var(--bar); border-radius: 6px; overflow: hidden; position: relative; margin: 8px 0 4px; }
+.bar > i { display: block; height: 100%; background: var(--fill); border-radius: 6px; transition: width .6s; }
+.bar .mark { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--warn); }
+.bar .mark.hi { background: var(--bad); }
+.note { color: var(--muted); font-size: 12px; margin-top: 8px; }
+.err { color: var(--bad); font-family: var(--mono); font-size: 12px; margin-top: 8px; overflow-wrap: anywhere; }
+/* pipeline stepper */
+.steps { display: flex; flex-wrap: wrap; gap: 6px; }
+.step { flex: 1 1 120px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; min-width: 120px; }
+.step b { display: block; font-size: 12.5px; }
+.step span { font-size: 11.5px; color: var(--muted); }
+.step.done { border-color: var(--ok); } .step.done b::before { content: "✓ "; color: var(--ok); }
+.step.run { border-color: var(--info); box-shadow: inset 3px 0 0 var(--info); } .step.run b::before { content: "● "; color: var(--info); }
+.step.fail { border-color: var(--bad); } .step.fail b::before { content: "✕ "; color: var(--bad); }
+.step.wait b { color: var(--muted); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+th { color: var(--muted); font-weight: 500; font-size: 12px; }
+svg.spark { width: 100%; height: 46px; display: block; margin-top: 8px; }
+svg.spark path.l { fill: none; stroke: var(--fill); stroke-width: 1.6; }
+svg.spark path.a { fill: var(--fill); opacity: .12; }
+.tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+.tabs button { font: inherit; font-size: 12px; background: none; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 3px 10px; cursor: pointer; }
+.tabs button.on { color: var(--ink); border-color: var(--info); }
+pre.log { margin: 0; max-height: 300px; overflow: auto; font: 11.5px/1.5 var(--mono); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 420px) { header, main { padding-left: 16px; padding-right: 16px; } main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>blockline-usdt</h1>
+  <span class="sub">USDT-TRC20 · TRON node and ETL</span>
+  <span class="clock" id="clock">loading…</span>
+</header>
+<main>
+  <section class="card wide"><h2>Pipeline</h2><div class="steps" id="steps"></div></section>
+
+  <section class="card"><h2>Snapshot download <span class="pill" id="snap-pill"></span></h2><div id="snap"></div></section>
+  <section class="card"><h2>Node <span class="pill" id="node-pill"></span></h2><div id="node"></div></section>
+  <section class="card"><h2>ETL <span class="pill" id="etl-pill"></span></h2><div id="etl"></div></section>
+  <section class="card"><h2>Host</h2><div id="host"></div></section>
+
+  <section class="card wide"><h2>Services</h2><div id="units"></div></section>
+  <section class="card wide">
+    <h2>Log</h2>
+    <div class="tabs" id="tabs"></div>
+    <pre class="log" id="log">…</pre>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const num = n => n == null ? "–" : Number(n).toLocaleString("en-US");
+const bytes = b => {
+  if (b == null) return "–";
+  const u = ["B","KB","MB","GB","TB"]; let i = 0; b = Number(b);
+  while (b >= 1000 && i < u.length - 1) { b /= 1000; i++; }
+  return b.toFixed(i >= 3 ? 2 : 1) + " " + u[i];
+};
+const dur = s => {
+  if (s == null || !isFinite(s)) return "–";
+  s = Math.max(0, Math.round(s));
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : m ? `${m}m ${s % 60}s` : `${s}s`;
+};
+const ago = (now, t) => t == null ? "–" : dur(now - t) + " ago";
+// state files carry "YYYY-MM-DD HH:MM:SS" in UTC
+const parseUtc = s => s ? Date.parse(s.replace(" ", "T") + "Z") / 1000 : null;
+const pill = (el, text, cls) => { el.textContent = text; el.className = "pill " + cls; };
+const kv = rows => `<dl class="kv">${rows.filter(Boolean).map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("")}</dl>`;
+const bar = (frac, marks = []) => `<div class="bar"><i style="width:${(Math.min(1, Math.max(0, frac || 0)) * 100).toFixed(2)}%"></i>${
+  marks.map(([f, hi]) => `<span class="mark${hi ? " hi" : ""}" style="left:${f * 100}%"></span>`).join("")}</div>`;
+
+function spark(points, label) {
+  // points: [[t, value]] -> rate per second between consecutive samples
+  const rates = [];
+  for (let i = 1; i < points.length; i++) {
+    const [t0, v0] = points[i - 1], [t1, v1] = points[i];
+    if (v0 != null && v1 != null && t1 > t0 && v1 >= v0) rates.push([t1, (v1 - v0) / (t1 - t0)]);
+  }
+  if (rates.length < 2) return `<div class="note">${esc(label)}: the chart fills in as the page server samples (one point a minute).</div>`;
+  const W = 300, H = 46, max = Math.max(...rates.map(r => r[1])) || 1, t0 = rates[0][0], span = rates.at(-1)[0] - t0 || 1;
+  const xy = rates.map(([t, v]) => [((t - t0) / span * W).toFixed(1), (H - 2 - v / max * (H - 6)).toFixed(1)]);
+  const line = "M" + xy.map(p => p.join(",")).join("L");
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-label="${esc(label)}">
+    <path class="a" d="${line}L${W},${H}L0,${H}Z"/><path class="l" d="${line}" vector-effect="non-scaling-stroke"/></svg>
+    <div class="note">${esc(label)} over the last ${dur(span)} · peak ${label.includes("MB") ? (max / 1e6).toFixed(1) + " MB/s" : max.toFixed(1) + " /s"}</div>`;
+}
+
+function unitState(u) {
+  if (!u || u.LoadState === "not-found") return ["not installed", "idle"];
+  const a = u.ActiveState;
+  if (a === "active") return [u.SubState === "exited" ? "done" : "running", "ok"];
+  if (a === "activating") return ["running", "info"];
+  if (a === "failed") return ["failed", "bad"];
+  return [a || "unknown", "idle"];
+}
+
+function render(d) {
+  const now = d.now, s = d.snapshot, n = d.node, e = d.etl, U = d.units;
+  $("clock").textContent = "updated " + new Date(now * 1000).toISOString().slice(0, 19).replace("T", " ") + " UTC";
+
+  // ---- snapshot
+  let snapHtml, snapStep;
+  if (d.snapshot_verified) {
+    pill($("snap-pill"), "verified", "ok"); snapStep = "done";
+    snapHtml = `<div class="big ok">md5 matched</div>` + (s ? kv([["Size", bytes(s.size)], ["Started", esc(s.started) + " UTC"], ["Finished", esc(s.updated) + " UTC"]]) : "");
+  } else if (!s) {
+    pill($("snap-pill"), "not started", "idle"); snapStep = "wait";
+    snapHtml = `<div class="note">No snapshot state yet. Start it with <code>sudo systemctl start blockline-usdt-snapshot</code>.</div>`;
+  } else {
+    const frac = s.size ? s.bytes / s.size : 0, stale = now - parseUtc(s.updated);
+    const [ust] = unitState(U["blockline-usdt-snapshot"]);
+    let cls = "info", label = s.status;
+    if (s.error || s.status === "failed") { cls = "bad"; label = "failed"; }
+    else if (ust !== "running") { cls = "warn"; label = s.status + " (unit " + ust + ")"; }
+    else if (stale > 600) { cls = "warn"; label = "stalled?"; }
+    pill($("snap-pill"), label, cls);
+    snapStep = cls === "bad" ? "fail" : "run";
+    snapHtml = `<div class="big">${(frac * 100).toFixed(2)}%</div>${bar(frac)}
+      ${kv([["Downloaded", `${bytes(s.bytes)} of ${bytes(s.size)}`], ["Rate", s.rate_mb_s != null ? s.rate_mb_s + " MB/s" : "–"],
+        ["ETA", s.eta_hours != null ? dur(s.eta_hours * 3600) + ` (≈ ${new Date((now + s.eta_hours * 3600) * 1000).toISOString().slice(0, 16).replace("T", " ")} UTC)` : "–"],
+        ["Started", esc(s.started) + " UTC"], ["Last report", ago(now, parseUtc(s.updated)) + (stale > 600 ? ' <span class="warn">(stale)</span>' : "")],
+        ["Free disk", s.free_disk_tb != null ? s.free_disk_tb + " TB" : "–"], ["md5", `<code>${esc(s.md5_expected)}</code>`]])}
+      ${spark(d.series.map(p => [p.t, p.snap]), "Download rate, MB/s")}
+      ${s.error ? `<div class="err">${esc(s.error)}</div>` : ""}`;
+  }
+  $("snap").innerHTML = snapHtml;
+
+  // ---- node
+  const [nst, ncls] = unitState(U["blockline-usdt-node"]);
+  let nodeStep = "wait", nodeHtml;
+  if (!n.up) {
+    pill($("node-pill"), nst === "running" ? "starting" : ncls === "bad" ? "failed" : d.snapshot_verified ? "stopped" : "waiting",
+      nst === "running" ? "info" : ncls === "bad" ? "bad" : d.snapshot_verified ? "warn" : "idle");
+    nodeHtml = `<div class="note">${nst === "running" ? "The unit is up; the API on 127.0.0.1:18090 is not answering yet (java-tron takes a few minutes to open the database)."
+      : "Waits for the verified snapshot. The unit starts by itself when the md5 matches."}</div>`;
+    if (nst === "running") nodeStep = "run";
+    if (ncls === "bad") nodeStep = "fail";
+  } else {
+    const behind = n.head.behind_s, synced = behind != null && behind < 60;
+    pill($("node-pill"), synced ? "synced" : "catching up", synced ? "ok" : "info");
+    nodeStep = synced ? "done" : "run";
+    const gap = n.solid.number != null ? n.head.number - n.solid.number : null;
+    const mem = U["blockline-usdt-node"]?.MemoryCurrent;
+    nodeHtml = `<div class="big">${num(n.head.number)}</div>
+      <div class="note" style="margin-top:2px">head block · ${synced ? "at the tip" : dur(behind) + " behind the clock"}</div>
+      ${synced ? "" : bar(n.expected_head ? n.head.number / n.expected_head : 0)}
+      ${kv([["Solidified", num(n.solid.number) + (gap != null ? ` <span class="note">(${gap} behind head)</span>` : "")],
+        ["Blocks to go", synced ? "0" : "≈ " + num(n.expected_head - n.head.number)],
+        ["Peers", `${num(n.peers)} connected · ${num(n.active_peers)} active`], ["Version", esc(n.version || "–")],
+        ["Memory (unit)", bytes(mem)], ["Up since", esc(U["blockline-usdt-node"]?.ActiveEnterTimestamp || "–")]])}
+      ${spark(d.series.map(p => [p.t, p.head]), "Blocks imported per second")}`;
+  }
+  $("node").innerHTML = nodeHtml;
+
+  // ---- ETL
+  let etlHtml, phases = ["wait", "wait", "wait", "wait"];
+  if (!e) {
+    pill($("etl-pill"), "not started", "idle");
+    etlHtml = `<div class="note">The ETL is not written yet. It starts after the node is at the tip and the Phase 0 checks pass
+      (earliest block with internal transactions, history queries for 2018–19 blocks on 18091, read speed projecting to ≤ 21 days).</div>
+      <div class="note">It will report through <code>/srv/blockline-usdt/state/etl.json</code>; see <code>docs/DASHBOARD.md</code>.</div>`;
+  } else if (e.error && !e.phase) {
+    pill($("etl-pill"), "unreadable", "bad");
+    etlHtml = `<div class="err">${esc(e.error)}</div>`;
+  } else {
+    const [est, ecls] = unitState(U["blockline-usdt-etl"]);
+    const stale = now - parseUtc(e.updated);
+    pill($("etl-pill"), e.error ? "error" : stale > 300 ? "stalled?" : (e.state || est), e.error ? "bad" : stale > 300 ? "warn" : ecls === "ok" ? "ok" : "info");
+    const h = e.history || {}, l = e.live || {}, ep = e.epochs || {};
+    const frac = h.target_block ? h.next_block / h.target_block : 0;
+    const rate = h.blocks_per_s, left = h.target_block && rate ? (h.target_block - h.next_block) / rate : null;
+    const ph = String(e.phase ?? "");
+    const order = ["0", "1", "2", "3"], at = order.indexOf(ph[0]);
+    phases = order.map((p, i) => at < 0 ? "wait" : i < at ? "done" : i === at ? (e.error ? "fail" : "run") : "wait");
+    if (e.phases) for (const [k, v] of Object.entries(e.phases)) { const i = order.indexOf(k); if (i >= 0) phases[i] = v; }
+    etlHtml = `<div class="big">${(frac * 100).toFixed(2)}%</div>
+      <div class="note" style="margin-top:2px">history extracted · phase ${esc(ph || "–")}</div>${bar(frac)}
+      ${kv([["Next block", `${num(h.next_block)} of ${num(h.target_block)}`], ["Speed", rate != null ? `${num(rate.toFixed ? rate.toFixed(1) : rate)} blocks/s · ${num(h.workers)} workers` : "–"],
+        ["History left", dur(left)], ["Live follower", l.last_block != null ? `block ${num(l.last_block)} · ${num(l.lag_blocks)} behind solidified` : "–"],
+        ["Epochs sealed", ep.total ? `${num(ep.sealed)} of ${num(ep.total)}` : num(ep.sealed)],
+        ["Rows written", e.rows ? Object.entries(e.rows).map(([k, v]) => `${esc(k)} ${num(v)}`).join(" · ") : null],
+        ["Last report", ago(now, parseUtc(e.updated))]].filter(r => r[1] != null))}
+      ${e.checks ? `<table style="margin-top:10px"><tr><th>Check</th><th>Result</th></tr>${Object.entries(e.checks).map(([k, v]) => {
+        const c = v === "pass" ? "ok" : v === "fail" ? "bad" : "idle"; return `<tr><td>${esc(k)}</td><td class="${c}">${esc(v)}</td></tr>`; }).join("")}</table>` : ""}
+      ${spark(d.series.map(p => [p.t, p.etl]), "ETL blocks per second")}
+      ${e.error ? `<div class="err">${esc(e.error)}</div>` : ""}`;
+  }
+  $("etl").innerHTML = etlHtml;
+
+  // ---- pipeline
+  const steps = [
+    ["Snapshot", "stream 3.93 TB, md5", snapStep],
+    ["Node catch-up", "full node to the tip", nodeStep],
+    ["Phase 0", "checks and read speed", phases[0]],
+    ["Phase 1 · Live", "follow solidified head", phases[1]],
+    ["Phase 2 · History", "block 0 → head, verify", phases[2]],
+    ["Phase 3 · Go lite", "irreversible, gated", phases[3]],
+  ];
+  $("steps").innerHTML = steps.map(([t, sub, st]) => `<div class="step ${st}"><b>${esc(t)}</b><span>${esc(sub)}</span></div>`).join("");
+
+  // ---- host
+  const dk = d.disk, used = dk.used / dk.total, tr = d.traffic, mem = d.memory;
+  const trHtml = !tr ? "–" : tr.error ? `<span class="bad">${esc(tr.error)}</span>`
+    : `${num(tr.used_gb)} GB of ${num(tr.limit_gb)} GB (${esc(tr.month)})` + (tr.limits_off ? ' · <span class="warn">cap off this month</span>' : "");
+  $("host").innerHTML = `
+    <div class="note" style="margin-top:0">Disk (/srv) · alert 80 %, pause 90 %</div>
+    ${bar(used, [[0.8, false], [0.9, true]])}
+    ${kv([["Disk", `${bytes(dk.used)} used · ${bytes(dk.free)} free · ${(used * 100).toFixed(1)} %`],
+      ["Traffic", trHtml], tr && !tr.error ? ["Rx / Tx", `${bytes(tr.rx)} / ${bytes(tr.tx)}`] : null,
+      ["Memory", mem.total ? `${bytes(mem.total - mem.available)} used of ${bytes(mem.total)}` : "–"],
+      ["Load", d.load.map(x => x.toFixed(2)).join(" · ")]])}
+    ${tr && !tr.error && !tr.limits_off ? bar(tr.used_gb / tr.limit_gb, [[tr.stop_node_at_gb / tr.limit_gb, true]]) : ""}`;
+
+  // ---- units
+  $("units").innerHTML = `<table><tr><th>Unit</th><th>State</th><th>Since</th><th>Memory</th><th>Restarts</th></tr>${
+    Object.entries(U).map(([name, u]) => { const [t, c] = unitState(u);
+      return `<tr><td><code>${esc(name)}</code></td><td class="${c}">${esc(t)}${u.SubState && t !== "not installed" ? ` <span class="note">(${esc(u.SubState)})</span>` : ""}</td>
+        <td>${esc(u.ActiveEnterTimestamp || "–")}</td><td>${bytes(u.MemoryCurrent)}</td><td>${num(u.NRestarts)}</td></tr>`; }).join("")}</table>
+    <div class="note">Unit memory includes the page cache of files it writes, so the snapshot stream shows tens of GB; the kernel reclaims it.</div>`;
+}
+
+let logUnit = "snapshot";
+function tabs() {
+  $("tabs").innerHTML = ["snapshot", "node", "etl"].map(u => `<button class="${u === logUnit ? "on" : ""}" data-u="${u}">${u}</button>`).join("");
+  $("tabs").querySelectorAll("button").forEach(b => b.onclick = () => { logUnit = b.dataset.u; tabs(); loadLog(); });
+}
+async function loadLog() {
+  try {
+    const lines = await (await fetch("/api/log?unit=" + logUnit)).json();
+    const el = $("log"), atEnd = el.scrollTop + el.clientHeight >= el.scrollHeight - 20;
+    el.textContent = lines.join("\n");
+    if (atEnd) el.scrollTop = el.scrollHeight;
+  } catch (err) { $("log").textContent = "log unavailable: " + err; }
+}
+async function tick() {
+  try { render(await (await fetch("/api/status")).json()); }
+  catch (err) { $("clock").innerHTML = `<span class="bad">page server not answering (${esc(err.message)})</span>`; }
+}
+tabs(); tick(); loadLog();
+setInterval(tick, 5000); setInterval(loadLog, 15000);
+</script>
+</body>
+</html>

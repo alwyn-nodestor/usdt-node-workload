@@ -1,0 +1,27 @@
+[Unit]
+Description=blockline-usdt status page: node, snapshot and ETL (127.0.0.1:8288 only; open through an SSH tunnel)
+After=network-online.target
+
+[Service]
+User=usdt
+Group=usdt
+# reads the snapshot, node and ETL logs for the page's log panel
+SupplementaryGroups=systemd-journal
+WorkingDirectory=/home/usdt/blockline-usdt
+ExecStart=/usr/bin/python3 -u /home/usdt/blockline-usdt/dashboard/server.py --port 8288
+Restart=on-failure
+RestartSec=10
+# Read-only page: it writes nothing anywhere.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

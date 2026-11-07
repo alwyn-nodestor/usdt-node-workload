@@ -1,0 +1,16 @@
+[Unit]
+Description=blockline-usdt: stream the TRON FullNode snapshot (with internal transactions), verify it, then start the node
+Wants=network-online.target
+After=network-online.target
+# Only after the md5 matches and output-directory/database exists does the node start.
+OnSuccess=blockline-usdt-node.service
+
+[Service]
+Type=oneshot
+User=usdt
+Group=usdt
+ExecStart=/home/usdt/blockline-usdt/bin/blockline-usdt snapshot
+TimeoutStartSec=infinity
+Nice=5
+# Ordinary network blips are resumed inside the command (HTTP Range). A failure that reaches here (md5 mismatch,
+# disk reserve, tar error) is left for an operator: re-running downloads about 3.9 TB again.

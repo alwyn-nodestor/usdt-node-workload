@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# blockline-usdt operator CLI. Run as the usdt user:
+#   sudo -u usdt -i;  cd ~/blockline-usdt;  bin/blockline-usdt <install|snapshot|status>
+# The snapshot normally runs under systemd (it takes about a day and a half):
+#   sudo systemctl start blockline-usdt-snapshot     # streams, verifies, then starts blockline-usdt-node
+set -euo pipefail
+here=$(cd "$(dirname "$0")/.." && pwd)
+exec python3 -u "$here/lib/usdt_node.py" "$@"

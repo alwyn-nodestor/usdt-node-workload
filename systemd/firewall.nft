@@ -1,0 +1,12 @@
+#!/usr/sbin/nft -f
+# Its own table, so it never touches anyone else's rules. Re-applying replaces it (create, delete, define).
+# Ports: HTTP 8590 (full node), 8591 (solidity); gRPC 50551, 50561. Peer port 18888 stays open.
+table inet blockline_usdt
+delete table inet blockline_usdt
+table inet blockline_usdt {
+  chain input {
+    type filter hook input priority filter - 1; policy accept;
+    iifname "lo" accept
+    tcp dport { 8590, 8591, 8592, 50551, 50561, 50571 } drop
+  }
+}

@@ -11,9 +11,10 @@ Restart=on-failure
 RestartSec=10
 LimitNOFILE=500000
 TimeoutStopSec=120
-# ClickHouse caps itself at 16 GB (config.xml); this is the hard stop above it.
-MemoryHigh=18G
-MemoryMax=20G
+# ClickHouse caps its own memory at 16 GB (config.xml). No soft limit here: it would count the page cache too and
+# throttle reads, as it did to the node (PLAN.md change 24). The hard stop is only a backstop.
+MemoryHigh=infinity
+MemoryMax=48G
 Nice=2
 NoNewPrivileges=yes
 ProtectSystem=strict

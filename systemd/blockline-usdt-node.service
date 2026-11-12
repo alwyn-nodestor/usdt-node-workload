@@ -27,9 +27,12 @@ TimeoutStopSec=900
 Restart=on-failure
 RestartSec=60
 LimitNOFILE=500000
-# Heap plus LevelDB's off-heap caches. The host has 251 GB and runs BTC, wallex and the forks too.
-MemoryHigh=20G
-MemoryMax=24G
+# Memory counts the page cache of the 4 TB database too. A 20 GB MemoryHigh (until 2026-11-12) left about 6 GB of
+# cache, throttled the node 5.9 million times and made it reject valid blocks as OUT_OF_TIME. No soft limit now: the
+# heap is fixed at 12 GB by -Xmx, the rest is cache the kernel reclaims under host pressure. MemoryMax is a backstop
+# against a native-memory leak only.
+MemoryHigh=infinity
+MemoryMax=96G
 # the node's own traffic: systemctl show -p IPIngressBytes -p IPEgressBytes blockline-usdt-node
 IPAccounting=yes
 Nice=5

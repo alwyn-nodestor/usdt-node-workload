@@ -21,7 +21,8 @@ java-tron `GreatVoyage-v4.8.2.4` (FullNode.jar and Toolkit.jar by sha256, and TR
 `1254 F859 D2B1 BD9F 66E7 107D F859 BCB4 4A28 290B`), Eclipse Temurin `jdk8u512-b09` by sha256, and the release's own
 `config.conf` by sha256 with the edits listed in `lib/usdt_node.py` (10 peers, internal transactions and featured
 internal transactions saved, constant calls on for `balanceOf`, PBFT off, ports above, history queries kept open for
-after go-lite). Heap 12 GB, unit capped at 24 GB.
+after go-lite). Heap 12 GB; no soft memory limit (the page cache of the database must fit), hard cap 96 GB; `vm.maxTimeRatio = 20`
+(PLAN.md change 24).
 
 ## Running it
 

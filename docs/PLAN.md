@@ -128,7 +128,7 @@ database. Allowed only when the gate in Phase 3 holds. This is irreversible with
 **Both phases**: HTTP 18090, solidity 18091, gRPC 50551 / 50561; java-tron's defaults 8090 / 8091 / 50051 / 50061 are
 not used, because blockline-btc's hot service already listens on 127.0.0.1:8090. java-tron has no bind-address setting,
 so these listen on every interface; the AceCloud security group has no inbound rule for any of them, so none is
-reachable from outside. PBFT APIs are off. Heap 12 GB, unit capped at 24 GB (`MemoryMax`), `IPAccounting` on for the
+reachable from outside. PBFT APIs are off. Heap 12 GB, no soft memory limit and a 96 GB backstop (`MemoryMax`; change 24), `IPAccounting` on for the
 node's own traffic. `node.maxConnections = 10`
 (default 30), `node.minConnections` below it (default 8). There is no switch to disable inbound connections. The AceCloud security group has no inbound
 rule for port 18888 (TCP or UDP), so inbound peers are blocked there (checked 2026-11-07: inbound allows only SSH from
@@ -411,7 +411,7 @@ soon as its input exists, a commit point per step, guards, dashboard on loopback
 
 - **Lag alert**: fires when the hot layer is more than about 2 minutes behind the node's head (setting). A separate
   alert fires when the solidified ETL falls an hour behind.
-- **RAM guard**: node 24 GB + Postgres 32–64 GB + clustering 64–128 GB is 120–216 GB against about 170 GB free, so the
+- **RAM guard**: node 24 GB (heap and native; its page cache is reclaimable) + Postgres 32–64 GB + clustering 64–128 GB is 120–216 GB against about 170 GB free, so the
   guard runs clustering and bulk Postgres loads one at a time, never together.
 - **Disk guard** on the data root's filesystem: alert at 80% full; at 90% pause clustering and Postgres loads.
 - **Offsite backups** of what cannot be downloaded again: the Tier 2 tables (0.3–0.8 TB once, then about 10–30 GB a
@@ -611,3 +611,7 @@ All from the owner's decisions of 2026-11-07. Revision 3's changes are in git hi
     parquet size, Postgres was 5.2x; wallet lookups read 16,384 rows at any size (22 ms uncached on 200M rows); a
     10-hop trace took 146 ms. Accepted risk: losing ClickHouse after go-lite means a new 4 TB snapshot download and
     re-extraction (3.2, 8, 9, 10.2; `docs/CLICKHOUSE.md`).
+24. Node memory: the 20 GB `MemoryHigh` counted the page cache, so the node kept about 6 GB of its 4 TB database
+    cached, was throttled 5.9 million times, and twice rejected a valid block as `OUT_OF_TIME` (87,909,164 and
+    87,922,315, about an hour stalled each). The unit now has no soft limit and a 96 GB backstop, and
+    `vm.maxTimeRatio` is 20 (release 5) (2.4, 9).

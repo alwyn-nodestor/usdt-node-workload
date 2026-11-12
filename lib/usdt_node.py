@@ -66,6 +66,9 @@ CONFIG_EDITS = [
     # balanceOf and other constant calls (the per-address balance check needs them)
     ("  supportConstant = false\n", "  supportConstant = true\n"),
     # internal transactions for every block this node processes; featured = stake/delegate internal records
+    # replaying blocks: allow the VM 20x the per-transaction time budget (release: 5x). At 5x this node rejected two
+    # valid blocks as OUT_OF_TIME on 2026-11-12 (87,909,164 and 87,922,315) and stalled about an hour each time
+    ("  maxTimeRatio = 5.0\n", "  maxTimeRatio = 20.0\n"),
     ("  saveInternalTx = false\n",
      "  saveInternalTx = true\n  saveFeaturedInternalTx = true\n  saveCancelAllUnfreezeV2Details = true\n"),
 ]

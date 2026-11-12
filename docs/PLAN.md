@@ -100,8 +100,8 @@ files for now.
 
 **Full phase** (from download to go-lite):
 
-- JDK 8 on x86_64 (Temurin 8 tarball, no root) with the LevelDB snapshot. Heap 12 GB, RAM cap 24 GB for the unit
-  (revisited after the catch-up measurement).
+- JDK 8 on x86_64 (Temurin 8 tarball, no root) with the LevelDB snapshot. Heap 12 GB; the unit has no soft memory limit and a
+  96 GB backstop (revisited after the catch-up measurement, change 24).
 - `vm.saveInternalTx = true` and `vm.saveFeaturedInternalTx = true` from the first start, so blocks processed locally
   during the catch-up keep their internal transactions.
 - History queries are on by default on a FullNode; Phase 0 confirms that `getblockbynum` and

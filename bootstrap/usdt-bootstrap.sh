@@ -52,10 +52,11 @@ echo "== debian may act as usdt"
 # The node database (about 900,000 files) and ClickHouse's data inherit these through the default ACLs set on their
 # parents, so a re-run skips them instead of rewriting every file's ACL on a slow disk.
 for d in /home/usdt "$ROOT"; do
+  # a file that a running service deletes during the scan is not an error worth stopping the bootstrap for
   find "$d" \( -path "$ROOT/node/output-directory" -o -path "$ROOT/clickhouse/data" \) -prune \
-    -o -exec setfacl -m u:debian:rwX {} +
+    -o -exec setfacl -m u:debian:rwX {} + 2>/dev/null || echo "   (some files changed during the ACL scan; skipped)"
   find "$d" \( -path "$ROOT/node/output-directory" -o -path "$ROOT/clickhouse/data" \) -prune \
-    -o -type d -exec setfacl -m d:u:debian:rwX -m d:u:usdt:rwX {} +
+    -o -type d -exec setfacl -m d:u:debian:rwX -m d:u:usdt:rwX {} + 2>/dev/null || true
 done
 
 echo "== systemd units"

@@ -49,9 +49,13 @@ for p in "$SRC" "$SRC/.git"; do
 done
 
 echo "== debian may act as usdt"
+# The node database (about 900,000 files) and ClickHouse's data inherit these through the default ACLs set on their
+# parents, so a re-run skips them instead of rewriting every file's ACL on a slow disk.
 for d in /home/usdt "$ROOT"; do
-  setfacl -R -m u:debian:rwX "$d"
-  find "$d" -type d -exec setfacl -m d:u:debian:rwX -m d:u:usdt:rwX {} +
+  find "$d" \( -path "$ROOT/node/output-directory" -o -path "$ROOT/clickhouse/data" \) -prune \
+    -o -exec setfacl -m u:debian:rwX {} +
+  find "$d" \( -path "$ROOT/node/output-directory" -o -path "$ROOT/clickhouse/data" \) -prune \
+    -o -type d -exec setfacl -m d:u:debian:rwX -m d:u:usdt:rwX {} +
 done
 
 echo "== systemd units"

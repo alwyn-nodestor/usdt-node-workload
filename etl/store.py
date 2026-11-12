@@ -1,14 +1,10 @@
-"""Tier 2 parquet parts: tier2/<table>/epoch=<k>/<first>-<last>.parquet, written atomically (temp file + rename).
-
-A part never crosses an epoch boundary (PLAN.md 3.1). A run's progress is its cursor file; parts at or above a
-cursor's next block are leftovers of a crash between writing parts and moving the cursor, and are removed on start.
-"""
+"""Row schemas of the Tier 2 tables as the extractor produces them (arrow types; the ETL ships them to ClickHouse
+as parquet, etl/ch.py), the epoch length, and small JSON state helpers."""
 import json
 import os
 from pathlib import Path
 
 import pyarrow as pa
-import pyarrow.parquet as pq
 
 EPOCH = 201_600
 TS = pa.timestamp("ms", tz="UTC")
@@ -45,58 +41,6 @@ SCHEMAS = {t: pa.schema(cols) for t, cols in SCHEMAS.items()}
 
 def epoch_of(block):
     return block // EPOCH
-
-
-def part_dir(root, table, block):
-    return Path(root) / table / f"epoch={epoch_of(block):04d}"
-
-
-def write_parts(root, first, last, rows):
-    """rows: {table: [dict]}; all blocks in [first, last] and in one epoch. Returns rows written per table."""
-    assert epoch_of(first) == epoch_of(last), (first, last)
-    counts = {}
-    for table, schema in SCHEMAS.items():
-        data = rows.get(table, [])
-        if not data and table != "block_headers":
-            continue
-        d = part_dir(root, table, first)
-        d.mkdir(parents=True, exist_ok=True)
-        tmp = d / f".{first:010d}-{last:010d}.parquet.tmp"
-        pq.write_table(pa.Table.from_pylist(data, schema=schema), tmp, compression="zstd")
-        os.replace(tmp, d / f"{first:010d}-{last:010d}.parquet")
-        counts[table] = len(data)
-    return counts
-
-
-def remove_from(root, block):
-    """Remove parts that start at or above `block` in its epoch (crash leftovers past a cursor)."""
-    removed = 0
-    for table in SCHEMAS:
-        d = part_dir(root, table, block)
-        if not d.exists():
-            continue
-        for p in d.glob("*.parquet*"):
-            first = int(p.name.lstrip(".").split("-")[0])
-            if first >= block:
-                p.unlink()
-                removed += 1
-    return removed
-
-
-def covered(root):
-    """Block ranges present in block_headers, merged: [(first, last)]."""
-    spans = []
-    for p in (Path(root) / "block_headers").glob("epoch=*/*.parquet"):
-        a, b = p.stem.split("-")
-        spans.append((int(a), int(b)))
-    spans.sort()
-    merged = []
-    for a, b in spans:
-        if merged and a <= merged[-1][1] + 1:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
-        else:
-            merged.append((a, b))
-    return merged
 
 
 def read_json(path, default=None):

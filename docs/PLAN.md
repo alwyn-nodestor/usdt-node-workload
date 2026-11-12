@@ -62,7 +62,7 @@ systemd units, sudoers), `lib/usdt_node.py` behind `bin/blockline-usdt` (`instal
 config; `snapshot`: the stream of 2.3; `status`), and `systemd/` (the snapshot unit, which starts the node unit once the
 snapshot is verified), and `dashboard/` (the status page on 127.0.0.1:8288 for the snapshot, the node and the ETL; see
 `docs/DASHBOARD.md`, which also fixes the `state/etl.json` contract the ETL writes), and `etl/` (the live follower and range workers into
-Tier 2 parquet; `docs/ETL.md`). The folders below are the target layout; the node rows of `node/` and `install/` live in these
+Tier 2 in ClickHouse; `docs/ETL.md`, `docs/CLICKHOUSE.md`). The folders below are the target layout; the node rows of `node/` and `install/` live in these
 files for now.
 
 | Folder | Does | Output (under `data_root`) |
@@ -398,10 +398,11 @@ counts; the internal-transaction gap, if the earliest block with internal transa
   is dropped by a fork is marked retracted.
 - **Exposure**: per address or entity, the share of inflow and outflow from labelled categories (sanctioned,
   blacklisted, exchange, unknown), direct and up to K hops.
-- **Delivery**: parquet for analysis; the **`usdt` Postgres instance** (its own instance, not the wallex one) with
-  transfers, entities, labels and alerts, using the types of 3.3. It runs under the data root with its own memory
-  limit, so its bulk loads and vacuums do not compete with wallex. Wallex reads it through a read-only role, or
-  `postgres_fdw` if it needs joins. An API comes after v1.
+- **Delivery** (amended 2026-11-12, change 23): Tier 2 lives in **ClickHouse** only (`docs/CLICKHOUSE.md`), written
+  directly by the ETL; there is no parquet copy and no Postgres copy of chain data. USDT transfers are stored once per
+  side, sorted by address, so wallet lookups are range reads; a per-address summary is kept as rows arrive. Entities,
+  labels, watchlists and alerts (small, edited) go to Postgres. Wallex reads ClickHouse through its HTTP port or
+  `clickhouse_fdw`. An API comes after v1.
 
 ## 9. Operations
 
@@ -437,7 +438,7 @@ All figures are estimates, measured in Phase 0 and the full phase.
 | Node | about 4.1 TB extracted (3.93 TB archive), plus catch-up growth | about 0.1 TB, then about 1 TB/year between prunes |
 | Prune scratch (transient) | — (no pruning) | about 2× the node database |
 | Tier 2 + Tier 3, history and live | 0.4–0.8 TB | 0.4–0.8 TB, growing |
-| Postgres `usdt` | — (loaded after go-lite) | 0.6–1.0 TB |
+| Postgres `usdt` | — (dropped, change 23: Tier 2 is in ClickHouse, counted in the row above) | — |
 | Clustering working space | — | about 0.1 TB |
 | **Sum** | **about 4.5–4.9 TB** | **about 1.2–2.2 TB plus node growth and prune scratch** |
 
@@ -488,7 +489,7 @@ which the forks are paused and the host disk is near its peak.
 | **1. Live** | `etl` following the solidified head, sealing, hot layer, guards, status, dashboard; history run started in parallel | live data from the head on, no gaps and parent hashes linked for 14 days |
 | **2. Extract history** | `etl` from block 0 to the head; section 5 checks including the frozen-height sweep | full `balanceOf` match at H for every address that ever held USDT; no negative balance at any block; supply reconciles; zero gaps and parent-hash linkage from block 0; every epoch below the head sealed |
 | **3. Go lite** | the conversion of 2.4, under the gate below; forks resume | lite node at the head, ETL following it, disk back to the after-go-lite figure |
-| **4. Index** | Tier 3; Postgres `usdt` loaded | stats and balances match the node for the sample |
+| **4. Index** | Tier 3 in ClickHouse | stats and balances match the node for the sample |
 | **5. Clustering** | ut-v1, report, quality, ablation | report reviewed; every merging rule meets the promotion bar (6); no unexplained join over the breaker limits |
 | **6. Labels** | label store, ground truth (tuning and held-out sets), scoring | ground-truth precision and recall published in the report |
 | **7. Investigation** | tracing, watchlists and alerts, exposure | an analyst can investigate a hash, track a wallet and see its entity |
@@ -605,3 +606,8 @@ All from the owner's decisions of 2026-11-07. Revision 3's changes are in git hi
 21. Snapshot measured: `backup20261106`, 3.93 TB, about 37 hours; resumes dropped connections by HTTP Range; disk,
     traffic and timeline re-summed (2.1, 2.3, 10.2, 10.3, 10.5, decisions 14 and 15).
 22. The November cap is off in the host guards (10.3).
+23. Tier 2 moves from parquet to ClickHouse, written directly by the ETL, single copy, no backup (owner, 2026-11-12;
+    replaces decision 5's Postgres for chain data). Benchmark on 6,453 real blocks: ClickHouse with zstd is 0.97x the
+    parquet size, Postgres was 5.2x; wallet lookups read 16,384 rows at any size (22 ms uncached on 200M rows); a
+    10-hop trace took 146 ms. Accepted risk: losing ClickHouse after go-lite means a new 4 TB snapshot download and
+    re-extraction (3.2, 8, 9, 10.2; `docs/CLICKHOUSE.md`).

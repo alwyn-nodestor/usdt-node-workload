@@ -74,6 +74,13 @@ CONFIG_REQUIRED = ['transHistory.switch = "on"', 'db.engine = "LEVELDB"']
 # No effect on a full node; it keeps getblockbynum / gettransactioninfobyblocknum open after go-lite (PLAN.md 2.4).
 CONFIG_APPEND = "\n# blockline-usdt (lib/usdt_node.py)\nnode {\n  openHistoryQueryWhenLiteFN = true\n}\n"
 
+CLICKHOUSE = {  # LTS, published 2026-10-21; sha256 of the tarball whose GitHub .sha512 was checked on 2026-11-12
+    "version": "26.8.33.10",
+    "url": "https://github.com/ClickHouse/ClickHouse/releases/download/v26.8.33.10-lts/clickhouse-common-static-26.8.33.10-amd64.tgz",
+    "sha256": "4b11daf6b9abd18a7c14cfd839d837ced74c39c71be0f945338deabbe4ed4224",
+}
+REPO = Path(__file__).resolve().parents[1]
+
 DISK_RESERVE = int(os.environ.get("BLOCKLINE_USDT_DISK_RESERVE", 200 * 1024**3))  # the snapshot stream stops if the disk would drop below this
 CHUNK = 4 * 1024 * 1024
 
@@ -185,7 +192,32 @@ def cmd_install(_):
     current.symlink_to(JAVA_TRON_TAG)
 
     render_config()
+    install_clickhouse(None)
     log("install done")
+
+
+def install_clickhouse(_):
+    """ClickHouse server for Tier 2 (docs/CLICKHOUSE.md): pinned binary, data folders, config from the repo."""
+    downloads, home = ROOT / "downloads", ROOT / "clickhouse"
+    for d in (downloads, home / "bin", home / "data", home / "tmp", home / "log", home / "user_files"):
+        d.mkdir(parents=True, exist_ok=True)
+    tarball = fetch(CLICKHOUSE["url"], downloads / Path(CLICKHOUSE["url"]).name, CLICKHOUSE["sha256"])
+    binary = home / "bin" / f"clickhouse-{CLICKHOUSE['version']}"
+    if not binary.exists():
+        member = f"clickhouse-common-static-{CLICKHOUSE['version']}/usr/bin/clickhouse"
+        with tarfile.open(tarball) as t:
+            src = t.extractfile(member)
+            with open(binary.with_suffix(".part"), "wb") as f:
+                shutil.copyfileobj(src, f, CHUNK)
+        binary.with_suffix(".part").chmod(0o755)
+        binary.with_suffix(".part").replace(binary)
+    link = home / "clickhouse"
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.symlink_to(Path("bin") / binary.name)
+    shutil.copyfile(REPO / "clickhouse" / "config.xml", home / "config.xml")
+    log(subprocess.run([str(link), "server", "--version"], capture_output=True, text=True).stdout.strip())
+    log(f"ClickHouse installed in {home}; start it with the blockline-usdt-clickhouse unit")
 
 
 # --- Snapshot ---------------------------------------------------------------------------------------------------------
@@ -321,6 +353,7 @@ def main():
     p = argparse.ArgumentParser(prog="blockline-usdt")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("install").set_defaults(fn=cmd_install)
+    sub.add_parser("install-clickhouse").set_defaults(fn=install_clickhouse)
     sub.add_parser("snapshot").set_defaults(fn=cmd_snapshot)
     sub.add_parser("status").set_defaults(fn=cmd_status)
     args = p.parse_args()

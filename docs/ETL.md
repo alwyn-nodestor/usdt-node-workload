@@ -1,7 +1,8 @@
 # ETL
 
 `etl/` reads solidified blocks from the local node (solidity API, 127.0.0.1:18091) in block order and writes the
-Tier 2 tables of PLAN.md 3.3 as parquet under `/srv/blockline-usdt/tier2/<table>/epoch=<k>/<first>-<last>.parquet`.
+Tier 2 tables of PLAN.md 3.3 into ClickHouse (`docs/CLICKHOUSE.md`). Parquet was used until 2026-11-12 and imported
+with `etl import-parquet`.
 
     bin/blockline-usdt etl live              # Phase 1: follow the solidified head (the blockline-usdt-etl unit)
     bin/blockline-usdt etl range FROM TO     # Phase 2: one history worker over FROM..TO, resumable
@@ -14,23 +15,26 @@ The system python has no `venv` module and there is no root, so the venv is made
     ~/.local/bin/uv venv --python /usr/bin/python3 .venv
     ~/.local/bin/uv pip install --python .venv/bin/python pyarrow==25.0.1 pycryptodome==3.23.0
 
+pyarrow is still used: batches travel to ClickHouse as parquet.
+
 ## Per block
 
 1. `getblockbynum` and `gettransactioninfobyblocknum` (hex addresses; stored as base58 `T…`).
 2. Checks, before anything is written: the block ID starts with the block number; the parent hash is the previous
    block's ID (carried across restarts in the cursor); every txID is sha256 of its `raw_data_hex`; the info call lists
    exactly the block's transactions, in order. A failure stops the run (exit 2) and shows on the status page.
-3. Rows for every table. Parts are flushed every 200 blocks or 10 minutes (live), 20,000 blocks (range), never across
-   an epoch (201,600 blocks). The cursor moves only after a flush; parts past the cursor are removed on start.
-4. An epoch is sealed (`tier2/_sealed/epoch=<k>.json`) when `block_headers` covers all of it and its last block is
-   1,000 below the solidified head.
+3. Rows for every table, inserted into ClickHouse every 20 blocks or 30 s (live) or 1,000 blocks (range), never
+   across an epoch (201,600 blocks). The cursor moves only after a batch is in; rows past the cursor are deleted on
+   start.
+4. An epoch is sealed (`state/sealed.json`) when `block_headers` has all of its blocks and its last block is 1,000
+   below the solidified head.
 
 ## Tables written
 
 | Table | Notes |
 |---|---|
 | `block_headers` | every block |
-| `usdt_transfers` | every `Transfer` log of USDT, direct or through another contract (`method = via_contract`); `kind` mint / burn / transfer; `spoofed` left null (filled by clustering, PLAN.md 6) |
+| `usdt_legs` (view `transfers`) | every `Transfer` log of USDT, direct or through another contract (`method = via_contract`), stored once per side; `kind` mint / burn / transfer; `spoofed` left null (filled by clustering, PLAN.md 6). Plus `address_summary` |
 | `usdt_approvals`, `usdt_admin` | uint256 values as 32 raw bytes plus decimal string; unknown USDT topics kept as `unknown:<topic>` |
 | `usdt_tx_costs` | every transaction that calls USDT directly or emits a USDT log; `energy_source` null until inferred |
 | `usdt_failed_calls` | direct USDT calls whose receipt is not SUCCESS, decoded from call data; raw data kept when it does not decode |

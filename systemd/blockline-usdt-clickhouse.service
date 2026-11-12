@@ -1,0 +1,25 @@
+[Unit]
+Description=blockline-usdt ClickHouse: Tier 2 store (127.0.0.1:18123 HTTP, 19000 native; docs/CLICKHOUSE.md)
+After=network-online.target
+
+[Service]
+User=usdt
+Group=usdt
+WorkingDirectory=/srv/blockline-usdt/clickhouse
+ExecStart=/srv/blockline-usdt/clickhouse/clickhouse server --config-file=/srv/blockline-usdt/clickhouse/config.xml
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=500000
+TimeoutStopSec=120
+# ClickHouse caps itself at 16 GB (config.xml); this is the hard stop above it.
+MemoryHigh=18G
+MemoryMax=20G
+Nice=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/srv/blockline-usdt/clickhouse
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

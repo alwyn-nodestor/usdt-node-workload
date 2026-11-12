@@ -1,12 +1,14 @@
-"""The ETL (PLAN.md 2.6): solidified blocks from the local node, in block order, into Tier 2 parquet.
+"""The ETL (PLAN.md 2.6): solidified blocks from the local node, in block order, into Tier 2 in ClickHouse.
 
   bin/blockline-usdt etl live                 follow the solidified head (Phase 1). First start: at the current
                                               solidified block, unless --start is given. Resumes from its cursor.
   bin/blockline-usdt etl range FROM TO        one history worker for blocks FROM..TO (Phase 2), resumable
   bin/blockline-usdt etl block N              extract one block and print the rows (no writes)
+  bin/blockline-usdt etl import-parquet DIR   load Tier 2 parquet written before the switch (docs/CLICKHOUSE.md)
 
-Cursors: state/etl-live.json, state/etl-range-FROM-TO.json. The live run also writes state/etl.json for the status
-page (docs/DASHBOARD.md), folding in every range cursor it finds.
+Cursors: state/etl-live.json, state/etl-range-FROM-TO.json. A cursor moves only after a batch is in ClickHouse; on
+start, rows past the cursor (a batch interrupted mid-way) are deleted from ClickHouse before extraction resumes.
+The live run also writes state/etl.json for the status page (docs/DASHBOARD.md), folding in every range cursor.
 """
 import argparse
 import json
@@ -20,12 +22,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from etl import ch  # noqa: E402
 from etl.extract import BlockError, extract  # noqa: E402
-from etl.store import EPOCH, covered, epoch_of, read_json, remove_from, write_json, write_parts  # noqa: E402
+from etl.store import EPOCH, SCHEMAS, epoch_of, read_json, write_json  # noqa: E402
 
 ROOT = Path(os.environ.get("BLOCKLINE_USDT_ROOT", "/srv/blockline-usdt"))
 STATE = ROOT / "state"
-TIER2 = ROOT / "tier2"
 SOLID = "http://127.0.0.1:18091/walletsolidity"
 SEAL_MARGIN = 1000
 FETCHERS = 6
@@ -82,9 +84,9 @@ class Run:
             write_json(cursor_path, cur)
         cur["error"] = None
         self.cur = cur
-        removed = remove_from(TIER2, cur["next_block"])
+        removed = ch.delete_from(cur["next_block"], stop)
         if removed:
-            log(f"removed {removed} part files at or past the cursor (left by an interrupted flush)")
+            log(f"deleted {removed} rows at or past block {cur['next_block']} (left by an interrupted batch)")
         self.buf, self.buf_first, self.buf_since = None, None, time.time()
         self.rate_mark = (time.time(), cur["next_block"])
         self.rate = None
@@ -97,7 +99,11 @@ class Run:
         if not self.buf or not self.buf["block_headers"]:
             return
         first, last = self.buf_first, self.buf["block_headers"][-1]["block"]
-        counts = write_parts(TIER2, first, last, self.buf)
+        counts = {}
+        for t in SCHEMAS:   # block_headers last: a block counts as present once its header is in
+            if t != "block_headers":
+                counts[t] = ch.insert(t, self.buf.get(t, []))
+        counts["block_headers"] = ch.insert("block_headers", self.buf["block_headers"])
         for t, n in counts.items():
             self.cur["rows"][t] = self.cur["rows"].get(t, 0) + n
         self.cur["next_block"] = last + 1
@@ -156,28 +162,50 @@ class Run:
                     nxt = num + 1
 
 
+def import_parquet(root, upto):
+    """One-off: load parquet parts written before the switch (blocks <= upto). Refuses if ClickHouse already has any
+    block in that range, so it cannot double-load."""
+    import pyarrow.dataset as ds
+    files = sorted((root / "block_headers").glob("epoch=*/*.parquet"))
+    if not files:
+        sys.exit(f"no parquet under {root}")
+    lo = min(int(f.stem.split("-")[0]) for f in files)
+    have = int(ch.scalar(f"SELECT count() FROM {ch.DB}.block_headers WHERE block BETWEEN {lo} AND {upto}") or 0)
+    if have:
+        sys.exit(f"ClickHouse already has {have} blocks in {lo}..{upto}; not importing")
+    for table in SCHEMAS:
+        d = root / table
+        if not d.exists():
+            continue
+        t = ds.dataset(str(d), format="parquet", partitioning=None).to_table(filter=ds.field("block") <= upto)
+        rows = t.to_pylist()
+        for i in range(0, len(rows), 200_000):
+            ch.insert(table, rows[i:i + 200_000])
+        log(f"imported {table}: {len(rows)} rows")
+
+
 # ---- status for the page ---------------------------------------------------------------------------------------
 
 def seal(solid):
-    """Mark epochs that are fully present in Tier 2 and solidified past the margin. Returns (sealed, total)."""
-    sealed_dir = TIER2 / "_sealed"
-    sealed_dir.mkdir(parents=True, exist_ok=True)
-    have = covered(TIER2)
+    """Epochs with every block header present and solidified past the margin are sealed (state/sealed.json).
+    Returns (sealed, total)."""
+    path = STATE / "sealed.json"
+    sealed = read_json(path, {})
     total = epoch_of(solid) + 1 if solid is not None else 0
+    have = ch.epoch_counts(EPOCH)
     for k in range(total):
-        lo, hi = k * EPOCH, (k + 1) * EPOCH - 1
-        marker = sealed_dir / f"epoch={k:04d}.json"
-        if marker.exists() or hi > solid - SEAL_MARGIN:
-            continue
-        if any(a <= lo and hi <= b for a, b in have):
-            write_json(marker, {"epoch": k, "first": lo, "last": hi, "sealed": now_utc()})
-    return len(list(sealed_dir.glob("epoch=*.json"))), total
+        hi = (k + 1) * EPOCH - 1
+        if str(k) not in sealed and hi <= solid - SEAL_MARGIN and have.get(k) == EPOCH:
+            sealed[str(k)] = now_utc()
+    write_json(path, sealed)
+    return len(sealed), total
 
 
 def status(run):
     last_seal = getattr(status, "_seal", 0)
     if time.time() - last_seal > 600:
         status._seal_result = seal(run.solid)
+        status._sizes = ch.sizes()
         status._seal = time.time()
     sealed, total = getattr(status, "_seal_result", (0, 0))
     cur = run.cur
@@ -205,6 +233,8 @@ def status(run):
         "history": hist,
         "epochs": {"sealed": sealed, "total": total},
         "rows": rows,
+        "store": "clickhouse",
+        "storage": getattr(status, "_sizes", {}),
         "checks": {"block ID, parent hash, tx hashes (every block)": "pass" if not cur.get("error") else "fail"},
         "error": cur.get("error"),
     })
@@ -221,6 +251,9 @@ def main():
     rg.add_argument("last", type=int)
     one = sub.add_parser("block")
     one.add_argument("num", type=int)
+    imp = sub.add_parser("import-parquet")
+    imp.add_argument("dir", type=Path)
+    imp.add_argument("--upto", type=int, required=True, help="last block to import (the live cursor's next_block - 1)")
     args = p.parse_args()
 
     if args.cmd == "block":
@@ -231,15 +264,18 @@ def main():
         return
 
     STATE.mkdir(parents=True, exist_ok=True)
-    TIER2.mkdir(parents=True, exist_ok=True)
+    ch.apply_schema()
+    if args.cmd == "import-parquet":
+        import_parquet(args.dir, args.upto)
+        return
     if args.cmd == "live":
         cursor = STATE / "etl-live.json"
         start = args.start if args.start is not None else (read_json(cursor) or {}).get("start_block") or solid_head()
-        run = Run(cursor, start, None, flush_blocks=200, flush_seconds=600, on_flush=status)
+        run = Run(cursor, start, None, flush_blocks=20, flush_seconds=30, on_flush=status)
         log(f"live: from block {run.cur['next_block']} (started at {run.cur['start_block']})")
     else:
         cursor = STATE / f"etl-range-{args.first}-{args.last}.json"
-        run = Run(cursor, args.first, args.last, flush_blocks=20_000, flush_seconds=1800)
+        run = Run(cursor, args.first, args.last, flush_blocks=1000, flush_seconds=300)
         log(f"range {args.first}..{args.last}: from block {run.cur['next_block']}")
     try:
         run.go()

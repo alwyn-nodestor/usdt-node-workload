@@ -1,7 +1,8 @@
 [Unit]
-Description=blockline-usdt ETL: follow the node's solidified head into Tier 2 parquet (Phase 1)
-After=blockline-usdt-node.service
+Description=blockline-usdt ETL: follow the node's solidified head into Tier 2 in ClickHouse (Phase 1)
+After=blockline-usdt-node.service blockline-usdt-clickhouse.service
 Wants=blockline-usdt-node.service
+Requires=blockline-usdt-clickhouse.service
 
 [Service]
 User=usdt
@@ -16,7 +17,7 @@ Nice=5
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/srv/blockline-usdt/state /srv/blockline-usdt/tier2
+ReadWritePaths=/srv/blockline-usdt/state
 PrivateTmp=yes
 MemoryMax=8G
 

@@ -26,7 +26,7 @@ echo "== user and data root"
 id usdt >/dev/null 2>&1 || useradd --create-home --shell /bin/bash usdt
 chmod 750 /home/usdt
 install -d -o usdt -g usdt -m 750 "$ROOT"
-for d in node state downloads app tier2; do install -d -o usdt -g usdt -m 750 "$ROOT/$d"; done
+for d in node state downloads app clickhouse; do install -d -o usdt -g usdt -m 750 "$ROOT/$d"; done
 free_tb=$(df --output=avail -B1 "$ROOT" | tail -1 | awk '{printf "%.2f", $1/1e12}')
 echo "   free disk at $ROOT: $free_tb TB (the extracted snapshot needs about 4.1 TB plus a 0.2 TB reserve)"
 
@@ -56,13 +56,14 @@ done
 
 echo "== systemd units"
 for unit in blockline-usdt-snapshot.service blockline-usdt-node.service blockline-usdt-dashboard.service \
-            blockline-usdt-etl.service; do
+            blockline-usdt-clickhouse.service blockline-usdt-etl.service; do
   install -m 644 "$REPO/systemd/$unit" "/etc/systemd/system/$unit"
 done
 systemctl daemon-reload
 systemctl enable blockline-usdt-node.service    # starts at boot once the snapshot is verified; not started now
 systemctl enable blockline-usdt-dashboard.service
 systemctl restart blockline-usdt-dashboard.service   # read-only status page, 127.0.0.1:8288
+systemctl enable blockline-usdt-clickhouse.service    # Tier 2 store; started below once installed
 systemctl enable blockline-usdt-etl.service           # live ETL (Phase 1); started below once its venv exists
 
 sudoers_tmp=$(mktemp); trap 'rm -f "$sudoers_tmp"' EXIT
@@ -81,15 +82,18 @@ Cmnd_Alias USDT_UNITS = /usr/bin/systemctl start blockline-usdt-snapshot.service
   /usr/bin/systemctl restart blockline-usdt-dashboard.service, /usr/bin/systemctl restart blockline-usdt-dashboard, \
   /usr/bin/systemctl start blockline-usdt-etl.service, /usr/bin/systemctl stop blockline-usdt-etl.service, \
   /usr/bin/systemctl restart blockline-usdt-etl.service, /usr/bin/systemctl start blockline-usdt-etl, \
-  /usr/bin/systemctl stop blockline-usdt-etl, /usr/bin/systemctl restart blockline-usdt-etl
+  /usr/bin/systemctl stop blockline-usdt-etl, /usr/bin/systemctl restart blockline-usdt-etl, \
+  /usr/bin/systemctl start blockline-usdt-clickhouse.service, /usr/bin/systemctl stop blockline-usdt-clickhouse.service, \
+  /usr/bin/systemctl restart blockline-usdt-clickhouse.service, /usr/bin/systemctl start blockline-usdt-clickhouse, \
+  /usr/bin/systemctl stop blockline-usdt-clickhouse, /usr/bin/systemctl restart blockline-usdt-clickhouse
 debian, usdt ALL=(root) NOPASSWD: USDT_UNITS
 RULES
 # checked before it is installed: a broken file in /etc/sudoers.d would break sudo for everyone
 visudo -cf "$sudoers_tmp"
 install -m 0440 "$sudoers_tmp" /etc/sudoers.d/blockline-usdt
 
-install -d -o usdt -g usdt -m 750 "$ROOT/tier2"
-if [ -x "$REPO/.venv/bin/python" ]; then systemctl restart blockline-usdt-etl.service; fi
+if [ -x "$ROOT/clickhouse/clickhouse" ]; then systemctl restart blockline-usdt-clickhouse.service; fi
+if [ -x "$REPO/.venv/bin/python" ] && [ -x "$ROOT/clickhouse/clickhouse" ]; then systemctl restart blockline-usdt-etl.service; fi
 
 echo "== done. Status page: ssh -L 8288:127.0.0.1:8288 debian@<server>, then http://localhost:8288"
 echo "   Next, as debian:"

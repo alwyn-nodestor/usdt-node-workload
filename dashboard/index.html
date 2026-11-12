@@ -218,7 +218,12 @@ function render(d) {
       histHtml = `<div class="note" style="margin-top:12px">History: ${(frac * 100).toFixed(2)}% of assigned blocks</div>${bar(frac)}
         ${kv([["Done", `${num(h.next_block)} of ${num(h.target_block)} blocks`], ["Speed", `${fmtRate(h.blocks_per_s)} · ${num(h.workers)} workers`], ["Left", dur(left)]])}`;
     }
-    const rowsHtml = e.rows ? `<table style="margin-top:10px"><tr><th>Tier 2 table</th><th style="text-align:right">Rows</th></tr>${
+    const st = e.storage && Object.keys(e.storage).length ? e.storage : null;
+    const rowsHtml = st ? `<table style="margin-top:10px"><tr><th>ClickHouse table</th><th style="text-align:right">Rows</th><th style="text-align:right">On disk</th></tr>${
+      Object.entries(st).sort((a, b) => b[1].bytes - a[1].bytes).map(([k, v]) =>
+        `<tr><td><code>${esc(k)}</code></td><td style="text-align:right">${num(v.rows)}</td><td style="text-align:right">${bytes(v.bytes)}</td></tr>`).join("")}
+        <tr><th>Total</th><th></th><th style="text-align:right">${bytes(Object.values(st).reduce((a, v) => a + v.bytes, 0))}</th></tr></table>`
+      : e.rows ? `<table style="margin-top:10px"><tr><th>Tier 2 table</th><th style="text-align:right">Rows</th></tr>${
       Object.entries(e.rows).filter(([k]) => k !== "block_headers").sort((a, b) => b[1] - a[1]).map(([k, v]) =>
         `<tr><td><code>${esc(k)}</code></td><td style="text-align:right">${num(v)}</td></tr>`).join("")}</table>` : "";
     etlHtml = `<div class="big">${num(l.last_block)}</div>

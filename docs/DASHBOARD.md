@@ -44,7 +44,9 @@ more than 5 minutes old.
   "live":    {"start_block": 87915000, "last_block": 87930000, "lag_blocks": 1, "solid_head": 87930001,
               "blocks_per_s": 0.33, "blocks_done": 15000},
   "epochs":  {"sealed": 30, "total": 77},
-  "rows":    {"trc20_transfers": 123456789},
+  "rows":    {"usdt_transfers": 123456789},
+  "store":   "clickhouse",
+  "storage": {"usdt_legs": {"rows": 246913578, "bytes": 9876543210}},   // per ClickHouse table, shown on the page
   "checks":  {"continuity": "pass", "no negative balance": "pending"},   // pass | fail | pending
   "error": null                              // a message here turns the badge red
 }

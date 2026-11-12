@@ -205,22 +205,31 @@ function render(d) {
     const [est, ecls] = unitState(U["blockline-usdt-etl"]);
     const stale = now - parseUtc(e.updated);
     pill($("etl-pill"), e.error ? "error" : stale > 300 ? "stalled?" : (e.state || est), e.error ? "bad" : stale > 300 ? "warn" : ecls === "ok" ? "ok" : "info");
-    const h = e.history || {}, l = e.live || {}, ep = e.epochs || {};
-    const frac = h.target_block ? h.next_block / h.target_block : 0;
-    const rate = h.blocks_per_s, left = h.target_block && rate ? (h.target_block - h.next_block) / rate : null;
+    const h = e.history, l = e.live || {}, ep = e.epochs || {};
     const ph = String(e.phase ?? "");
     const order = ["0", "1", "2", "3"], at = order.indexOf(ph[0]);
     phases = order.map((p, i) => at < 0 ? "wait" : i < at ? "done" : i === at ? (e.error ? "fail" : "run") : "wait");
     if (e.phases) for (const [k, v] of Object.entries(e.phases)) { const i = order.indexOf(k); if (i >= 0) phases[i] = v; }
-    etlHtml = `<div class="big">${(frac * 100).toFixed(2)}%</div>
-      <div class="note" style="margin-top:2px">history extracted · phase ${esc(ph || "–")}</div>${bar(frac)}
-      ${kv([["Next block", `${num(h.next_block)} of ${num(h.target_block)}`], ["Speed", rate != null ? `${num(rate.toFixed ? rate.toFixed(1) : rate)} blocks/s · ${num(h.workers)} workers` : "–"],
-        ["History left", dur(left)], ["Live follower", l.last_block != null ? `block ${num(l.last_block)} · ${num(l.lag_blocks)} behind solidified` : "–"],
-        ["Epochs sealed", ep.total ? `${num(ep.sealed)} of ${num(ep.total)}` : num(ep.sealed)],
-        ["Rows written", e.rows ? Object.entries(e.rows).map(([k, v]) => `${esc(k)} ${num(v)}`).join(" · ") : null],
-        ["Last report", ago(now, parseUtc(e.updated))]].filter(r => r[1] != null))}
+    const fmtRate = r => r == null ? "–" : Number(r).toFixed(1) + " blocks/s";
+    let histHtml = `<div class="note">History (Phase 2, block 0 → ${num(l.start_block)}) not started: it waits for the Phase 0 gate.</div>`;
+    if (h) {
+      const frac = h.target_block ? h.next_block / h.target_block : 0;
+      const left = h.target_block && h.blocks_per_s ? (h.target_block - h.next_block) / h.blocks_per_s : null;
+      histHtml = `<div class="note" style="margin-top:12px">History: ${(frac * 100).toFixed(2)}% of assigned blocks</div>${bar(frac)}
+        ${kv([["Done", `${num(h.next_block)} of ${num(h.target_block)} blocks`], ["Speed", `${fmtRate(h.blocks_per_s)} · ${num(h.workers)} workers`], ["Left", dur(left)]])}`;
+    }
+    const rowsHtml = e.rows ? `<table style="margin-top:10px"><tr><th>Tier 2 table</th><th style="text-align:right">Rows</th></tr>${
+      Object.entries(e.rows).filter(([k]) => k !== "block_headers").sort((a, b) => b[1] - a[1]).map(([k, v]) =>
+        `<tr><td><code>${esc(k)}</code></td><td style="text-align:right">${num(v)}</td></tr>`).join("")}</table>` : "";
+    etlHtml = `<div class="big">${num(l.last_block)}</div>
+      <div class="note" style="margin-top:2px">last block extracted (live) · ${l.lag_blocks == null ? "–" : l.lag_blocks < 200 ? "at the solidified head" : num(l.lag_blocks) + " blocks behind solidified"}</div>
+      ${kv([["Started at", `block ${num(l.start_block)}`], ["Blocks extracted", num(l.blocks_done)], ["Speed", fmtRate(l.blocks_per_s)],
+        ["Solidified head", num(l.solid_head)], ["Epochs sealed", ep.total ? `${num(ep.sealed)} of ${num(ep.total)}` : num(ep.sealed)],
+        ["Last report", ago(now, parseUtc(e.updated))]])}
+      ${histHtml}
       ${e.checks ? `<table style="margin-top:10px"><tr><th>Check</th><th>Result</th></tr>${Object.entries(e.checks).map(([k, v]) => {
         const c = v === "pass" ? "ok" : v === "fail" ? "bad" : "idle"; return `<tr><td>${esc(k)}</td><td class="${c}">${esc(v)}</td></tr>`; }).join("")}</table>` : ""}
+      ${rowsHtml}
       ${spark(d.series.map(p => [p.t, p.etl]), "ETL blocks per second")}
       ${e.error ? `<div class="err">${esc(e.error)}</div>` : ""}`;
   }

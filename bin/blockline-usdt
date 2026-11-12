@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 # blockline-usdt operator CLI. Run as the usdt user:
-#   sudo -u usdt -i;  cd ~/blockline-usdt;  bin/blockline-usdt <install|snapshot|status>
+#   sudo -u usdt -i;  cd ~/blockline-usdt;  bin/blockline-usdt <install|snapshot|status|etl ...>
 # The snapshot normally runs under systemd (it takes about a day and a half):
 #   sudo systemctl start blockline-usdt-snapshot     # streams, verifies, then starts blockline-usdt-node
+# The ETL needs the venv (pyarrow, pycryptodome; docs/ETL.md):
+#   bin/blockline-usdt etl live | etl range FROM TO | etl block N
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
+if [ "${1:-}" = etl ]; then
+  shift
+  [ -x "$here/.venv/bin/python" ] || { echo "no venv: see docs/ETL.md (uv venv + pyarrow, pycryptodome)"; exit 1; }
+  exec "$here/.venv/bin/python" -u "$here/etl/run.py" "$@"
+fi
 exec python3 -u "$here/lib/usdt_node.py" "$@"

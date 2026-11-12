@@ -30,7 +30,7 @@ The rate charts come from one sample a minute kept in memory (a day); they start
 
 ## ETL contract: `state/etl.json`
 
-The ETL (not written yet) reports by rewriting this file atomically (write a temp file, then rename) at least once a
+The ETL (`etl/run.py live`, docs/ETL.md) reports by rewriting this file atomically (write a temp file, then rename) at least once a
 minute. Every field is optional; the page shows what is present. The page marks the ETL "stalled?" when `updated` is
 more than 5 minutes old.
 
@@ -41,7 +41,8 @@ more than 5 minutes old.
   "phases": {"0": "done", "1": "run"},       // optional override per phase: done | run | wait | fail
   "state": "running",                        // short word for the badge
   "history": {"next_block": 30000000, "target_block": 77000000, "blocks_per_s": 52.3, "workers": 4},
-  "live":    {"last_block": 76999980, "lag_blocks": 1},
+  "live":    {"start_block": 87915000, "last_block": 87930000, "lag_blocks": 1, "solid_head": 87930001,
+              "blocks_per_s": 0.33, "blocks_done": 15000},
   "epochs":  {"sealed": 30, "total": 77},
   "rows":    {"trc20_transfers": 123456789},
   "checks":  {"continuity": "pass", "no negative balance": "pending"},   // pass | fail | pending

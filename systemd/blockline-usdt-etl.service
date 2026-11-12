@@ -1,0 +1,24 @@
+[Unit]
+Description=blockline-usdt ETL: follow the node's solidified head into Tier 2 parquet (Phase 1)
+After=blockline-usdt-node.service
+Wants=blockline-usdt-node.service
+
+[Service]
+User=usdt
+Group=usdt
+WorkingDirectory=/home/usdt/blockline-usdt
+ExecStart=/home/usdt/blockline-usdt/bin/blockline-usdt etl live
+# Node not answering: the ETL retries inside. A block that fails its checks exits 2 and is retried here every
+# 5 minutes; the error stays on the status page until it clears.
+Restart=on-failure
+RestartSec=300
+Nice=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/srv/blockline-usdt/state /srv/blockline-usdt/tier2
+PrivateTmp=yes
+MemoryMax=8G
+
+[Install]
+WantedBy=multi-user.target

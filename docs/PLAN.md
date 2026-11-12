@@ -61,7 +61,8 @@ snapshot download of about 4 TB. That is the accepted cost of this route.
 systemd units, sudoers), `lib/usdt_node.py` behind `bin/blockline-usdt` (`install`: pinned JDK 8, java-tron jars and
 config; `snapshot`: the stream of 2.3; `status`), and `systemd/` (the snapshot unit, which starts the node unit once the
 snapshot is verified), and `dashboard/` (the status page on 127.0.0.1:8288 for the snapshot, the node and the ETL; see
-`docs/DASHBOARD.md`, which also fixes the `state/etl.json` contract the ETL will write). The folders below are the target layout; the node rows of `node/` and `install/` live in these
+`docs/DASHBOARD.md`, which also fixes the `state/etl.json` contract the ETL writes), and `etl/` (the live follower and range workers into
+Tier 2 parquet; `docs/ETL.md`). The folders below are the target layout; the node rows of `node/` and `install/` live in these
 files for now.
 
 | Folder | Does | Output (under `data_root`) |

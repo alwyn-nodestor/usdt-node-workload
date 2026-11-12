@@ -81,6 +81,11 @@ def journal(name, lines=60):
     except (OSError, subprocess.TimeoutExpired) as err:
         return [f"journalctl failed: {err}"]
     text = out.stdout.strip()
+    logfile = ROOT / "state" / "logs" / f"{name.removeprefix('blockline-usdt-')}.log"
+    if not text and logfile.exists():   # a process started by hand (nohup) logs to a file instead of the journal
+        with open(logfile, "rb") as f:
+            f.seek(max(0, f.seek(0, 2) - 20000))
+            return f.read().decode("utf-8", "replace").splitlines()[-lines:]
     if not text:
         return ["(no entries, or this service may not read the journal: add it to the systemd-journal group)"]
     return text.splitlines()
@@ -124,7 +129,7 @@ class Sampler:
         point = {"t": int(time.time()),
                  "snap": (snapshot or {}).get("bytes"),
                  "head": node.get("head", {}).get("number") if node.get("up") else None,
-                 "etl": ((etl or {}).get("history") or {}).get("next_block")}
+                 "etl": ((etl or {}).get("live") or {}).get("last_block")}
         with self.lock:
             self.points.append(point)
 

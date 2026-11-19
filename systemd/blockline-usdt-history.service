@@ -11,8 +11,10 @@ ConditionPathExists=/srv/blockline-usdt/state/etl-live.json
 User=usdt
 Group=usdt
 WorkingDirectory=/home/usdt/blockline-usdt
-# BLOCKLINE_USDT_HISTORY_WORKERS (default 4) range workers at a time, 6 node calls each. Every epoch resumes from its
-# own cursor (state/etl-range-FROM-TO.json), so a stop or reboot loses at most one unflushed batch per worker.
+# Range workers at a time, 6 node calls each (96 in flight at 16). Every epoch resumes from its own cursor
+# (state/etl-range-FROM-TO.json), so a stop or reboot loses at most one unflushed batch per worker. To change it:
+# edit here, then daemon-reload and restart this unit (running epochs resume where they stopped).
+Environment=BLOCKLINE_USDT_HISTORY_WORKERS=16
 ExecStart=/home/usdt/blockline-usdt/bin/blockline-usdt etl history
 # A block that fails its checks exits 2: retried every 5 minutes, the error stays on the status page.
 Restart=on-failure
@@ -24,7 +26,8 @@ ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/srv/blockline-usdt/state
 PrivateTmp=yes
-MemoryMax=16G
+# each worker holds up to 1,000 blocks of rows before a flush
+MemoryMax=40G
 
 [Install]
 WantedBy=multi-user.target

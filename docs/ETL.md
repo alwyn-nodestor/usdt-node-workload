@@ -61,7 +61,7 @@ Started by `bin/usdt-up` (step 9) right after the live ETL, i.e. once the node i
 
 - The range is block 0 to the live run's `start_block - 1`, fixed in `state/etl-history.json` on the first run, so
   history and live meet with no gap and no overlap.
-- One `etl range` worker per epoch, oldest first, `BLOCKLINE_USDT_HISTORY_WORKERS` (default 4) at a time, each with
+- One `etl range` worker per epoch, oldest first, 16 at a time (`BLOCKLINE_USDT_HISTORY_WORKERS` in the unit; 4 when run by hand), each with
   its own cursor `state/etl-range-FROM-TO.json`. A restart skips finished epochs and resumes the rest.
 - A block failing its checks stops new epochs from starting; the running ones finish, the unit exits 2 and systemd
   retries every 5 minutes. The error shows in `etl-history.json` and as Phase 2 "fail" on the status page.

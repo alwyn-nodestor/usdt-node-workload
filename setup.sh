@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # blockline-usdt one-command setup.  Clone the repo and run:
 #
-#     git clone <repo> blockline-usdt && cd blockline-usdt && sudo ./setup.sh
+#     git clone <repo> blockline-usdt && cd blockline-usdt && sudo ./setup.sh --root /mnt/Data/blockline-usdt
+#
+# --root PATH  where to store node data, snapshot, ClickHouse, etc. (default: /srv/blockline-usdt)
+#              Use a mount with at least 5 TB free.
 #
 # What it does, in order:
 #   1. bootstrap    packages, usdt user, data root, systemd units (needs root)
@@ -18,6 +21,22 @@ here=$(cd "$(dirname "$0")" && pwd)
 
 # ── must run as root (the bootstrap needs it; later steps drop to usdt) ───────
 [ "$(id -u)" -eq 0 ] || { echo "run with sudo:  sudo $0 $*"; exit 1; }
+
+# ── parse args ────────────────────────────────────────────────────────────────
+up_args=()
+while [ $# -gt 0 ]; do
+  case $1 in
+    --root) export BLOCKLINE_USDT_ROOT=$2; shift ;;
+    -h|--help)
+      awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
+    *) up_args+=("$1") ;;
+  esac
+  shift
+done
+
+if [ -n "${BLOCKLINE_USDT_ROOT:-}" ]; then
+  echo "   data root: $BLOCKLINE_USDT_ROOT"
+fi
 
 # ── 1. bootstrap ──────────────────────────────────────────────────────────────
 echo; echo "===== 1/4 bootstrap (packages, user, systemd units) ====="
@@ -47,8 +66,8 @@ fi
 
 # ── 3. install runtime (JDK, java-tron, ClickHouse) ──────────────────────────
 echo; echo "===== 3/4 runtime install (JDK, java-tron, ClickHouse) ====="
-run_as usdt "$REPO/bin/blockline-usdt" install
+run_as usdt env BLOCKLINE_USDT_ROOT="${BLOCKLINE_USDT_ROOT:-}" "$REPO/bin/blockline-usdt" install
 
 # ── 4. bring the stack up ────────────────────────────────────────────────────
 echo; echo "===== 4/4 bringing the stack up ====="
-run_as usdt "$REPO/bin/usdt-up" "$@"
+run_as usdt env BLOCKLINE_USDT_ROOT="${BLOCKLINE_USDT_ROOT:-}" "$REPO/bin/usdt-up" "${up_args[@]+"${up_args[@]}"}"

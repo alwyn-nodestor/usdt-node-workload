@@ -17,7 +17,7 @@ set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "run with sudo"; exit 1; }
 [ "$(uname -s)" = Linux ] || { echo "the bootstrap is Linux-only (the operational scripts work on other platforms)"; exit 1; }
 SRC=$(cd "$(dirname "$0")/.." && pwd)
-ROOT=/srv/blockline-usdt
+ROOT=${BLOCKLINE_USDT_ROOT:-/srv/blockline-usdt}
 OPERATOR=${SUDO_USER:-$(logname 2>/dev/null || echo root)}
 OPERATOR_HOME=$(eval echo "~$OPERATOR")
 # shellcheck source=../lib/compat.sh
@@ -46,17 +46,18 @@ else
   run_as usdt git -C "$REPO" config user.email "tech@nodestors.com"
   echo "   cloned into $REPO"
 fi
+# let usdt read the source repo so `git pull` works from the clone
 if command -v setfacl >/dev/null 2>&1; then
-  setfacl -m u:usdt:x "$OPERATOR_HOME"
-  setfacl -R -m u:usdt:rX "$SRC"
+  setfacl -m u:usdt:x "$OPERATOR_HOME" 2>/dev/null || true
+  setfacl -R -m u:usdt:rX "$SRC" 2>/dev/null || true
 else
-  chmod o+x "$OPERATOR_HOME"
-  chmod -R o+rX "$SRC"
+  chmod o+x "$OPERATOR_HOME" 2>/dev/null || true
+  chmod -R o+rX "$SRC" 2>/dev/null || true
 fi
-# both forms: `git pull` from the clone checks the .git path of the source
+# mark the source repo as safe for usdt (non-fatal: the clone works without it)
 for p in "$SRC" "$SRC/.git"; do
-  run_as usdt git config --global --get-all safe.directory | grep -qxF "$p" \
-    || run_as usdt git config --global --add safe.directory "$p"
+  run_as usdt git config --global --get-all safe.directory 2>/dev/null | grep -qxF "$p" \
+    || run_as usdt git config --global --add safe.directory "$p" 2>/dev/null || true
 done
 
 echo "== $OPERATOR may act as usdt"
@@ -119,7 +120,7 @@ install -m 0440 "$sudoers_tmp" /etc/sudoers.d/blockline-usdt
 if [ -x "$ROOT/clickhouse/clickhouse" ]; then systemctl restart blockline-usdt-clickhouse.service; fi
 if [ -x "$REPO/.venv/bin/python" ] && [ -x "$ROOT/clickhouse/clickhouse" ]; then systemctl restart blockline-usdt-etl.service; fi
 
-echo "== done. Status page: ssh -L 8288:127.0.0.1:8288 debian@<server>, then http://localhost:8288"
-echo "   Next, as debian:"
+echo "== done. Status page: ssh -L 8288:127.0.0.1:8288 $OPERATOR@<server>, then http://localhost:8288"
+echo "   Next, as $OPERATOR:"
 echo "   sudo -u usdt $REPO/bin/blockline-usdt install"
 echo "   sudo systemctl start blockline-usdt-snapshot"

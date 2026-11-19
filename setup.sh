@@ -23,9 +23,9 @@ here=$(cd "$(dirname "$0")" && pwd)
 echo; echo "===== 1/4 bootstrap (packages, user, systemd units) ====="
 bash "$here/bootstrap/usdt-bootstrap.sh"
 
-# After the bootstrap, /home/usdt/blockline-usdt exists as a clone.
+# After the bootstrap, ~usdt/blockline-usdt exists as a clone.
 # Use that path for everything below so the usdt user owns the working tree.
-REPO=/home/usdt/blockline-usdt
+REPO=$(eval echo ~usdt)/blockline-usdt
 
 # ── 2. Python venv for the ETL ────────────────────────────────────────────────
 echo; echo "===== 2/4 Python venv ====="

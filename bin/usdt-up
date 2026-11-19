@@ -63,8 +63,7 @@ hm() { local s=${1%.*}; [ "$s" -lt 0 ] && s=0; printf '%dh%02dm' $((s / 3600)) $
 
 # ---------------------------------------------------------------------------------------------------------------------
 step "1/9 preflight"
-case $(id -un) in usdt|debian|root) ;; *) die "run as usdt or debian" ;; esac
-[ "$(id -un)" = root ] && die "run as usdt or debian, not root (only the bootstrap needs root)"
+[ "$(id -un)" = root ] && die "run as usdt or a regular user, not root (only the bootstrap needs root)"
 for tool in curl jq python3; do command -v $tool >/dev/null || die "$tool is not installed"; done
 free_tb=$(awk -v b="$(free_bytes "$ROOT")" 'BEGIN { printf "%.2f", b/1e12 }')
 log "free disk at $ROOT: $free_tb TB"
@@ -77,7 +76,7 @@ for u in snapshot node clickhouse etl dashboard; do installed $u || missing+=("b
 if [ ${#missing[@]} -gt 0 ]; then
   log "not installed: ${missing[*]}"
   log "install them once as root, then re-run this script:"
-  log "  sudo bash /home/debian/projects/blockline-usdt/bootstrap/usdt-bootstrap.sh"
+  log "  sudo bash $here/bootstrap/usdt-bootstrap.sh"
   exit 1
 fi
 log "all five units installed"

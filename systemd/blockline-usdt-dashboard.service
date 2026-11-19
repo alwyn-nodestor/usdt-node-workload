@@ -1,5 +1,5 @@
 [Unit]
-Description=blockline-usdt status page: node, snapshot and ETL (127.0.0.1:8288 only; open through an SSH tunnel)
+Description=blockline-usdt status page: node, snapshot and ETL (127.0.0.1:8288 and 10.120.130.105:8288)
 After=network-online.target
 
 [Service]
@@ -8,7 +8,7 @@ Group=usdt
 # reads the snapshot, node and ETL logs for the page's log panel
 SupplementaryGroups=systemd-journal
 WorkingDirectory=/home/usdt/blockline-usdt
-ExecStart=/usr/bin/python3 -u /home/usdt/blockline-usdt/dashboard/server.py --port 8288
+ExecStart=/usr/bin/python3 -u /home/usdt/blockline-usdt/dashboard/server.py --port 8288 --bind 127.0.0.1 --bind 10.120.130.105
 Restart=on-failure
 RestartSec=10
 # Read-only page: it writes nothing anywhere.

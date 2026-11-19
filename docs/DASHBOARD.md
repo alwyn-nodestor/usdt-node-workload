@@ -1,17 +1,19 @@
 # Status page
 
-One read-only page on `127.0.0.1:8288` (PLAN.md 2.2, 2.5) that shows the snapshot stream, the node and the ETL.
+One read-only page on `127.0.0.1:8288` and the LAN address `10.120.130.105:8288` (PLAN.md 2.2, 2.5) that shows the snapshot stream, the node and the ETL.
 `dashboard/server.py` (stdlib Python, no virtualenv) serves `dashboard/index.html` and a JSON feed; the page refreshes
 every 5 seconds. It writes nothing and calls nothing outside the machine.
 
-Open it from your own machine through an SSH tunnel:
+On the LAN, open http://10.120.130.105:8288 directly. It has no login, so anyone who can reach that address can read
+it. The addresses come from `--bind` in the unit (repeatable; default 127.0.0.1 only). From elsewhere, use an SSH tunnel
+(SSH listens on port 7722):
 
-    ssh -L 8288:127.0.0.1:8288 debian@<server>
+    ssh -p 7722 -L 8288:127.0.0.1:8288 blocklineadm@10.120.130.105
     # then http://localhost:8288
 
 It runs as the `blockline-usdt-dashboard` unit (user `usdt`, in the `systemd-journal` group so the log panel can read
 the snapshot, node and ETL logs). `sudo systemctl restart blockline-usdt-dashboard` after a `git pull`.
-Requests with any Host other than 127.0.0.1 / localhost get 421, so a web page cannot read it by DNS rebinding.
+Requests with any Host other than 127.0.0.1 / localhost or a `--bind` address get 421, so a web page cannot read it by DNS rebinding.
 
 ## What it reads
 

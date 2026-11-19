@@ -1,6 +1,7 @@
-"""blockline-usdt status page: the node, the snapshot stream and the ETL, on 127.0.0.1 only. Read-only.
+"""blockline-usdt status page: the node, the snapshot stream and the ETL. Read-only.
 
-  python3 dashboard/server.py [--port 8288]      (the blockline-usdt-dashboard unit runs this)
+  python3 dashboard/server.py [--port 8288] [--bind ADDR ...]   (the blockline-usdt-dashboard unit runs this)
+  --bind is repeatable and defaults to 127.0.0.1; each address listed is also accepted as a Host name.
   ssh -L 8288:127.0.0.1:8288 debian@<server>     then open http://localhost:8288 on your own machine
 
 Sources, all local; nothing here writes or calls out:
@@ -184,7 +185,7 @@ class Collector:
         return view
 
 
-def handler(collector):
+def handler(collector, allowed_hosts):
     class Handler(BaseHTTPRequestHandler):
         def send(self, code, body, kind):
             data = body if isinstance(body, bytes) else body.encode()
@@ -196,9 +197,9 @@ def handler(collector):
             self.wfile.write(data)
 
         def do_GET(self):
-            # it listens on loopback; refusing other Host names also stops DNS-rebinding pages reading it
-            if host_of(self.headers.get("Host")) not in LOCAL_HOSTS:
-                return self.send(421, "this page answers only as 127.0.0.1 or localhost", "text/plain")
+            # only the addresses it listens on (and loopback names); other Host names would be DNS rebinding
+            if host_of(self.headers.get("Host")) not in allowed_hosts:
+                return self.send(421, "this page answers only on the addresses it listens on", "text/plain")
             url = urlparse(self.path)
             if url.path == "/":
                 self.send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
@@ -222,12 +223,19 @@ def handler(collector):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", type=int, default=8288)
+    parser.add_argument("--bind", action="append", metavar="ADDR",
+                        help="address to listen on; repeat for several (default 127.0.0.1)")
     args = parser.parse_args()
+    binds = list(dict.fromkeys(args.bind or ["127.0.0.1"]))
+    allowed = LOCAL_HOSTS | {b.lower() for b in binds} | {f"[{b.lower()}]" for b in binds if ":" in b}
     collector = Collector()
     threading.Thread(target=collector.sampler.run, args=(collector,), daemon=True).start()
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), handler(collector))
-    print(f"blockline-usdt status on http://127.0.0.1:{args.port}", flush=True)
-    server.serve_forever()
+    servers = [ThreadingHTTPServer((b, args.port), handler(collector, allowed)) for b in binds]
+    for b in binds:
+        print(f"blockline-usdt status on http://{f'[{b}]' if ':' in b else b}:{args.port}", flush=True)
+    for s in servers[1:]:
+        threading.Thread(target=s.serve_forever, daemon=True).start()
+    servers[0].serve_forever()
 
 
 if __name__ == "__main__":

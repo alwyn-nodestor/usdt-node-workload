@@ -42,14 +42,17 @@ verified=$([ -e "$NODE/.snapshot-verified" ] && echo 1 || echo 0)
 printf '%sblockline-usdt%s  %s\n\n' "$B" "$N" "$(date -u '+%F %T UTC')"
 
 echo "${B}Services${N}"
-for u in snapshot node clickhouse etl dashboard; do
+for u in snapshot node clickhouse etl history dashboard; do
   IFS='|' read -r load act sub since mem < <(svc_info "$u")
   if [ "$load" != loaded ]; then row "$u" "$([ $u = snapshot ] && [ $verified = 1 ] && echo 0 || echo 2)" "not installed"; continue; fi
   case $act in
     active) lvl=0 ;;
     activating) lvl=1 ;;
     # the snapshot is a oneshot: inactive once it has done its work
-    inactive) lvl=$([ $u = snapshot ] && [ $verified = 1 ] && echo 0 || echo 2) ;;
+    inactive)
+      if [ $u = history ]; then  # waits for the live ETL, then runs for weeks, then is done
+        lvl=$(jq -e '.finished' "$STATE/etl-history.json" >/dev/null 2>&1 && echo 0 || { [ -e "$STATE/etl-live.json" ] && echo 2 || echo 1; })
+      else lvl=$([ $u = snapshot ] && [ $verified = 1 ] && echo 0 || echo 2); fi ;;
     *) lvl=2 ;;
   esac
   memtxt=$([[ $mem =~ ^[0-9]+$ ]] && awk -v b="$mem" 'BEGIN { printf " · %.1f GB", b/1e9 }')

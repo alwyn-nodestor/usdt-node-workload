@@ -6,6 +6,7 @@ with `etl import-parquet`.
 
     bin/blockline-usdt etl live              # Phase 1: follow the solidified head (the blockline-usdt-etl unit)
     bin/blockline-usdt etl range FROM TO     # Phase 2: one history worker over FROM..TO, resumable
+    bin/blockline-usdt etl history           # Phase 2: block 0 up to the live start, epoch by epoch (blockline-usdt-history unit)
     bin/blockline-usdt etl block N           # print one block's rows, write nothing
 
 ## Setup (once, as usdt)
@@ -50,5 +51,18 @@ pyarrow is still used: batches travel to ClickHouse as parquet.
   first-seen pass over the history.
 - Fee transfers (`kind = fee`): only possible if `Params` sets a non-zero `basisPointsRate`; read it in Phase 0.
 - The field review against investigation and clustering needs before the history run (PLAN.md 3.3).
-- History workers are not started: they wait for the Phase 0 gate. One measurement: 300 recent blocks
-  in 4.9 s (about 61 blocks/s, 6 fetchers) while the node was still catching up.
+- One read-speed measurement so far: 300 recent blocks in 4.9 s (about 61 blocks/s, 6 fetchers) while the node was
+  still catching up.
+
+## History backfill (Phase 2)
+
+Started by `bin/usdt-up` (step 9) right after the live ETL, i.e. once the node is synced; owner's decision of
+2026-11-19, ahead of the Phase 0 field review. The `blockline-usdt-history` unit runs `etl history`:
+
+- The range is block 0 to the live run's `start_block - 1`, fixed in `state/etl-history.json` on the first run, so
+  history and live meet with no gap and no overlap.
+- One `etl range` worker per epoch, oldest first, `BLOCKLINE_USDT_HISTORY_WORKERS` (default 4) at a time, each with
+  its own cursor `state/etl-range-FROM-TO.json`. A restart skips finished epochs and resumes the rest.
+- A block failing its checks stops new epochs from starting; the running ones finish, the unit exits 2 and systemd
+  retries every 5 minutes. The error shows in `etl-history.json` and as Phase 2 "fail" on the status page.
+- The unit is skipped (ConditionPathExists) until the live cursor exists, so a reboot before sync starts nothing.

@@ -32,6 +32,7 @@ LEDGER = Path("/srv/blockline-shared/bandwidth.json")
 PAGE = Path(__file__).with_name("index.html")
 HTTP_PORT, SOLIDITY_PORT = 18090, 18091
 UNITS = ["blockline-usdt-snapshot", "blockline-usdt-node", "blockline-usdt-clickhouse", "blockline-usdt-etl",
+         "blockline-usdt-history",
          "blockline-usdt-dashboard"]
 LOGS = {"snapshot": "blockline-usdt-snapshot", "node": "blockline-usdt-node", "etl": "blockline-usdt-etl"}
 LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]", ""})

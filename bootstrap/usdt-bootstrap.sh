@@ -81,7 +81,7 @@ fi
 
 echo "== systemd units"
 for unit in blockline-usdt-snapshot.service blockline-usdt-node.service blockline-usdt-dashboard.service \
-            blockline-usdt-clickhouse.service blockline-usdt-etl.service; do
+            blockline-usdt-clickhouse.service blockline-usdt-etl.service blockline-usdt-history.service; do
   install -m 644 "$REPO/systemd/$unit" "/etc/systemd/system/$unit"
 done
 systemctl daemon-reload
@@ -90,6 +90,7 @@ systemctl enable blockline-usdt-dashboard.service
 systemctl restart blockline-usdt-dashboard.service   # read-only status page, 127.0.0.1:8288
 systemctl enable blockline-usdt-clickhouse.service    # Tier 2 store; started below once installed
 systemctl enable blockline-usdt-etl.service           # live ETL (Phase 1); started below once its venv exists
+systemctl enable blockline-usdt-history.service       # history (Phase 2); skipped until the live ETL has a cursor
 
 sudoers_tmp=$(mktemp); trap 'rm -f "$sudoers_tmp"' EXIT
 cat > "$sudoers_tmp" <<RULES
@@ -110,7 +111,10 @@ Cmnd_Alias USDT_UNITS = /usr/bin/systemctl start blockline-usdt-snapshot.service
   /usr/bin/systemctl stop blockline-usdt-etl, /usr/bin/systemctl restart blockline-usdt-etl, \\
   /usr/bin/systemctl start blockline-usdt-clickhouse.service, /usr/bin/systemctl stop blockline-usdt-clickhouse.service, \\
   /usr/bin/systemctl restart blockline-usdt-clickhouse.service, /usr/bin/systemctl start blockline-usdt-clickhouse, \\
-  /usr/bin/systemctl stop blockline-usdt-clickhouse, /usr/bin/systemctl restart blockline-usdt-clickhouse
+  /usr/bin/systemctl stop blockline-usdt-clickhouse, /usr/bin/systemctl restart blockline-usdt-clickhouse, \\
+  /usr/bin/systemctl start blockline-usdt-history.service, /usr/bin/systemctl stop blockline-usdt-history.service, \\
+  /usr/bin/systemctl restart blockline-usdt-history.service, /usr/bin/systemctl start blockline-usdt-history, \\
+  /usr/bin/systemctl stop blockline-usdt-history, /usr/bin/systemctl restart blockline-usdt-history
 $OPERATOR, usdt ALL=(root) NOPASSWD: USDT_UNITS
 RULES
 # checked before it is installed: a broken file in /etc/sudoers.d would break sudo for everyone

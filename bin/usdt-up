@@ -11,7 +11,8 @@
 #   6. node          the FullNode unit runs and its API answers on 127.0.0.1:18090
 #   7. sync          the head is within SYNC_BEHIND_S seconds of the clock, for SYNC_CONFIRM checks in a row
 #   8. etl           the live ETL follows the solidified head (state/etl.json)
-#   9. dashboard     the status page on 127.0.0.1:8288, then one bin/usdt-status report
+#   9. history       the history backfill (block 0 up to where the live ETL began) runs; it takes weeks, in systemd
+#  10. dashboard     the status page on 127.0.0.1:8288, then one bin/usdt-status report
 #
 # Every step checks before it acts, so re-running after an interruption (or a reboot) continues where it stopped.
 # Stopping this script stops nothing: the snapshot and the node run under systemd. Log: state/logs/up.log.
@@ -62,7 +63,7 @@ block() { curl -sf -m 5 "http://$1/$2/getnowblock" | jq -r '.block_header.raw_da
 hm() { local s=${1%.*}; [ "$s" -lt 0 ] && s=0; printf '%dh%02dm' $((s / 3600)) $((s % 3600 / 60)); }
 
 # ---------------------------------------------------------------------------------------------------------------------
-step "1/9 preflight"
+step "1/10 preflight"
 [ "$(id -un)" = root ] && die "run as usdt or a regular user, not root (only the bootstrap needs root)"
 for tool in curl jq python3; do command -v $tool >/dev/null || die "$tool is not installed"; done
 free_tb=$(awk -v b="$(free_bytes "$ROOT")" 'BEGIN { printf "%.2f", b/1e12 }')
@@ -70,30 +71,30 @@ log "free disk at $ROOT: $free_tb TB"
 [ -x "$here/.venv/bin/python" ] || die "no ETL venv at $here/.venv (docs/ETL.md: uv venv + pyarrow, pycryptodome)"
 
 # ---------------------------------------------------------------------------------------------------------------------
-step "2/9 systemd units"
+step "2/10 systemd units"
 missing=()
-for u in snapshot node clickhouse etl dashboard; do installed $u || missing+=("blockline-usdt-$u"); done
+for u in snapshot node clickhouse etl history dashboard; do installed $u || missing+=("blockline-usdt-$u"); done
 if [ ${#missing[@]} -gt 0 ]; then
   log "not installed: ${missing[*]}"
   log "install them once as root, then re-run this script:"
   log "  sudo bash $here/bootstrap/usdt-bootstrap.sh"
   exit 1
 fi
-log "all five units installed"
+log "all six units installed"
 
 # ---------------------------------------------------------------------------------------------------------------------
-step "3/9 runtime (JDK, java-tron, config, ClickHouse)"
+step "3/10 runtime (JDK, java-tron, config, ClickHouse)"
 as_usdt "$here/bin/blockline-usdt" install
 
 # ---------------------------------------------------------------------------------------------------------------------
-step "4/9 ClickHouse"
+step "4/10 ClickHouse"
 active clickhouse || ctl start clickhouse
 for _ in $(seq 60); do curl -sf -m 3 "http://$CH/?query=SELECT%201" >/dev/null && break; sleep 5; done
 curl -sf -m 3 "http://$CH/?query=SELECT%201" >/dev/null || die "ClickHouse does not answer on $CH (journalctl -u blockline-usdt-clickhouse)"
 log "ClickHouse answers on $CH"
 
 # ---------------------------------------------------------------------------------------------------------------------
-step "5/9 snapshot"
+step "5/10 snapshot"
 if [ -e "$NODE/.snapshot-verified" ]; then
   log "already verified: $(cat "$NODE/.snapshot-verified")"
 else
@@ -124,7 +125,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------------------------------------------------
-step "6/9 node"
+step "6/10 node"
 active node || ctl start node      # normally already started by the snapshot unit (OnSuccess)
 log "waiting for the API on $HTTP (java-tron takes a few minutes to open the database)"
 for i in $(seq 120); do
@@ -137,7 +138,7 @@ done
 log "node answers: head $(block "$HTTP" wallet | cut -d' ' -f1)"
 
 # ---------------------------------------------------------------------------------------------------------------------
-step "7/9 sync (head within ${SYNC_BEHIND_S}s of the clock, $SYNC_CONFIRM checks in a row)"
+step "7/10 sync (head within ${SYNC_BEHIND_S}s of the clock, $SYNC_CONFIRM checks in a row)"
 started=$(date +%s) ok=0 prev_n= prev_t=
 while :; do
   read -r n ts < <(block "$HTTP" wallet || true) || true
@@ -168,7 +169,7 @@ done
 log "node synced: head $n, solidified $solid"
 
 # ---------------------------------------------------------------------------------------------------------------------
-step "8/9 ETL"
+step "8/10 ETL"
 active etl || ctl start etl
 for _ in $(seq 20); do
   upd=$(jq -r '.updated // empty' "$STATE/etl.json" 2>/dev/null || true)
@@ -179,7 +180,20 @@ active etl || die "the ETL unit is not running: journalctl -u blockline-usdt-etl
 log "ETL: $(jq -r '"\(.state // "?") · last block \(.live.last_block // "?") · \(.live.lag_blocks // "?") behind solidified\(if .error then " · error: " + .error else "" end)"' "$STATE/etl.json" 2>/dev/null || echo "no report yet")"
 
 # ---------------------------------------------------------------------------------------------------------------------
-step "9/9 dashboard"
+step "9/10 history backfill"
+for _ in $(seq 40); do [ -s "$STATE/etl-live.json" ] && break; sleep 15; done
+[ -s "$STATE/etl-live.json" ] || die "the live ETL wrote no cursor ($STATE/etl-live.json): journalctl -u blockline-usdt-etl -n 50"
+if jq -e '.finished' "$STATE/etl-history.json" >/dev/null 2>&1; then
+  log "history already done: $(jq -r '"blocks \(.first)..\(.last), finished \(.finished)"' "$STATE/etl-history.json")"
+else
+  active history || ctl start history
+  sleep 20
+  active history || die "the history unit is not running: journalctl -u blockline-usdt-history -n 50"
+  log "history: $(jq -r '"blocks \(.first)..\(.last) · \(.workers) workers"' "$STATE/etl-history.json" 2>/dev/null || echo "starting")"
+fi
+
+# ---------------------------------------------------------------------------------------------------------------------
+step "10/10 dashboard"
 ctl restart dashboard
 for _ in $(seq 10); do curl -sf -m 3 http://127.0.0.1:8288/api/status >/dev/null && break; sleep 2; done
 curl -sf -m 3 http://127.0.0.1:8288/api/status >/dev/null || die "the status page does not answer on 127.0.0.1:8288"

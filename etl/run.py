@@ -3,16 +3,20 @@
   bin/blockline-usdt etl live                 follow the solidified head (Phase 1). First start: at the current
                                               solidified block, unless --start is given. Resumes from its cursor.
   bin/blockline-usdt etl range FROM TO        one history worker for blocks FROM..TO (Phase 2), resumable
+  bin/blockline-usdt etl history [--workers N]
+                                              Phase 2: block 0 up to the live run's first block, one range worker
+                                              per epoch, N at a time, oldest first (the blockline-usdt-history unit)
   bin/blockline-usdt etl block N              extract one block and print the rows (no writes)
   bin/blockline-usdt etl import-parquet DIR   load Tier 2 parquet written before the switch (docs/CLICKHOUSE.md)
 
-Cursors: state/etl-live.json, state/etl-range-FROM-TO.json. A cursor moves only after a batch is in ClickHouse; on
+Cursors: state/etl-live.json, state/etl-range-FROM-TO.json, state/etl-history.json (the plan). A cursor moves only after a batch is in ClickHouse; on
 start, rows past the cursor (a batch interrupted mid-way) are deleted from ClickHouse before extraction resumes.
 The live run also writes state/etl.json for the status page (docs/DASHBOARD.md), folding in every range cursor.
 """
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.error
@@ -31,6 +35,7 @@ STATE = ROOT / "state"
 SOLID = "http://127.0.0.1:18091/walletsolidity"
 SEAL_MARGIN = 1000
 FETCHERS = 6
+HISTORY_WORKERS = int(os.environ.get("BLOCKLINE_USDT_HISTORY_WORKERS", 4))  # range workers at a time (x FETCHERS calls)
 
 
 def log(msg):
@@ -184,6 +189,51 @@ def import_parquet(root, upto):
         log(f"imported {table}: {len(rows)} rows")
 
 
+def history(workers):
+    """Phase 2: blocks 0 .. (live start - 1), one `range` subprocess per epoch, `workers` at a time, oldest first.
+    The upper bound is fixed on the first run (state/etl-history.json), so the history meets the live run exactly
+    at its first block. Each epoch resumes from its own range cursor; finished epochs are skipped."""
+    plan_path = STATE / "etl-history.json"
+    plan = read_json(plan_path)
+    if plan is None:
+        live = read_json(STATE / "etl-live.json")
+        if not live:
+            sys.exit("no live cursor (state/etl-live.json): start the live ETL first; the history ends where it began")
+        last = live["start_block"] - 1
+        plan = {"first": 0, "last": last, "target_blocks": last + 1, "started": now_utc(), "finished": None}
+    plan.update(workers=workers, error=None)
+    write_json(plan_path, plan)
+    first, last = plan["first"], plan["last"]
+    todo = []
+    for k in range(epoch_of(first), epoch_of(last) + 1):
+        a, b = max(first, k * EPOCH), min(last, (k + 1) * EPOCH - 1)
+        if not (read_json(STATE / f"etl-range-{a}-{b}.json") or {}).get("finished"):
+            todo.append((a, b))
+    log(f"history {first}..{last}: {len(todo)} of {epoch_of(last) - epoch_of(first) + 1} epochs to do, {workers} at a time")
+    running, failed = {}, None
+    while todo or running:
+        while todo and len(running) < workers and failed is None:
+            a, b = todo.pop(0)
+            running[(a, b)] = subprocess.Popen([sys.executable, "-u", __file__, "range", str(a), str(b)])
+        time.sleep(5)
+        for key, proc in list(running.items()):
+            if proc.poll() is None:
+                continue
+            del running[key]
+            if proc.returncode != 0:  # a block failed its checks (exit 2) or the worker crashed: finish the others, stop
+                failed = failed or f"range {key[0]}..{key[1]} exited {proc.returncode}"
+                log(f"{failed}; no new epochs will start")
+        if failed and not running:
+            break
+    if failed:
+        plan["error"] = failed
+        write_json(plan_path, plan)
+        sys.exit(2)
+    plan["finished"] = now_utc()
+    write_json(plan_path, plan)
+    log(f"history done: blocks {first}..{last}")
+
+
 # ---- status for the page ---------------------------------------------------------------------------------------
 
 def seal(solid):
@@ -214,10 +264,14 @@ def status(run):
         c = read_json(p) or {}
         workers.append(c)
     hist = None
-    if workers:
+    plan = read_json(STATE / "etl-history.json")
+    if workers or plan:
         done = sum(c.get("next_block", 0) - c.get("start_block", 0) for c in workers)
         size = sum(c.get("stop_block", 0) - c.get("start_block", 0) + 1 for c in workers)
-        hist = {"next_block": done, "target_block": size, "workers": len(workers),
+        if plan:  # the whole planned history, not only the epochs started so far
+            size = plan["target_blocks"]
+        hist = {"next_block": done, "target_block": size,
+                "workers": plan["workers"] if plan else len(workers),
                 "blocks_per_s": round(sum(c.get("blocks_per_s") or 0 for c in workers if not c.get("finished")), 2),
                 "note": "blocks done of blocks assigned, over all range workers"}
     rows = dict(cur["rows"])
@@ -225,8 +279,11 @@ def status(run):
         for t, n in (c.get("rows") or {}).items():
             rows[t] = rows.get(t, 0) + n
     lag = None if run.solid is None else max(0, run.solid - (cur["next_block"] - 1))
+    phases = {"0": "run"}
+    if plan:
+        phases["2"] = "fail" if plan.get("error") else "done" if plan.get("finished") else "run"
     write_json(STATE / "etl.json", {
-        "updated": now_utc(), "phase": "1", "phases": {"0": "run"},
+        "updated": now_utc(), "phase": "1", "phases": phases,
         "state": "following" if lag is not None and lag < 200 else "catching up",
         "live": {"start_block": cur["start_block"], "last_block": cur["next_block"] - 1, "lag_blocks": lag,
                  "solid_head": run.solid, "blocks_per_s": cur.get("blocks_per_s"), "blocks_done": cur["blocks_done"]},
@@ -251,6 +308,8 @@ def main():
     rg.add_argument("last", type=int)
     one = sub.add_parser("block")
     one.add_argument("num", type=int)
+    hs = sub.add_parser("history")
+    hs.add_argument("--workers", type=int, default=HISTORY_WORKERS, help="range workers at a time (default %(default)s)")
     imp = sub.add_parser("import-parquet")
     imp.add_argument("dir", type=Path)
     imp.add_argument("--upto", type=int, required=True, help="last block to import (the live cursor's next_block - 1)")
@@ -265,6 +324,9 @@ def main():
 
     STATE.mkdir(parents=True, exist_ok=True)
     ch.apply_schema()
+    if args.cmd == "history":
+        history(args.workers)
+        return
     if args.cmd == "import-parquet":
         import_parquet(args.dir, args.upto)
         return

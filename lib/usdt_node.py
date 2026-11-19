@@ -11,17 +11,21 @@ node's APIs and inbound peer port 18888 are unreachable from outside (PLAN.md 2.
   blockline-usdt status      snapshot progress, node head/solidified block, peers, disk
 """
 import argparse
+import collections
 import hashlib
 import http.client
+import itertools
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(os.environ.get("BLOCKLINE_USDT_ROOT", "/srv/blockline-usdt"))
@@ -82,10 +86,21 @@ CLICKHOUSE = {  # LTS, published 2026-10-21; sha256 of the tarball whose GitHub 
     "url": "https://github.com/ClickHouse/ClickHouse/releases/download/v26.8.33.10-lts/clickhouse-common-static-26.8.33.10-amd64.tgz",
     "sha256": "4b11daf6b9abd18a7c14cfd839d837ced74c39c71be0f945338deabbe4ed4224",
 }
+# CPUs without PCLMULQDQ (e.g. a VM with the generic "QEMU Virtual CPU" model) get SIGILL from the release build;
+# they get ClickHouse's amd64compat build instead. It is only published from master, so this pin is the binary
+# downloaded on 2026-11-19: on a new server the URL will serve a newer build and the sha256 check will refuse it.
+CLICKHOUSE_COMPAT = {
+    "version": "26.11.1.2819-compat",
+    "url": "https://builds.clickhouse.com/master/amd64compat/clickhouse",
+    "sha256": "f54cce9dc95355d5efdaaa0d983d697e264b8c29ca0b1d5a171bc2903b0d827d",
+}
 REPO = Path(__file__).resolve().parents[1]
 
 DISK_RESERVE = int(os.environ.get("BLOCKLINE_USDT_DISK_RESERVE", 200 * 1024**3))  # the snapshot stream stops if the disk would drop below this
 CHUNK = 4 * 1024 * 1024
+SNAPSHOT_WORKERS = int(os.environ.get("BLOCKLINE_USDT_SNAPSHOT_WORKERS", 8))  # parallel connections to the mirror
+SNAPSHOT_PIECE = 64 * 1024 * 1024  # bytes per range request; up to WORKERS * 3 pieces are held in memory
+_state_lock = threading.Lock()
 
 
 def log(msg):
@@ -107,8 +122,43 @@ def fetch(url, dest, sha256):
         return dest
     tmp = dest.with_suffix(dest.suffix + ".part")
     log(f"download {url}")
-    with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=120) as r, open(tmp, "wb") as f:
-        shutil.copyfileobj(r, f, CHUNK)
+    failures = 0
+    while True:
+        offset = tmp.stat().st_size if tmp.exists() else 0
+        headers = dict(UA)
+        if offset:
+            headers["Range"] = f"bytes={offset}-"
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120) as r:
+                resumed = offset and r.status == 206 and r.headers.get("Content-Range", "").startswith(f"bytes {offset}-")
+                if offset and not resumed:
+                    log(f"{dest.name}: server ignored the resume (HTTP {r.status}), starting over")
+                    offset = 0
+                elif offset:
+                    log(f"{dest.name}: resuming at {offset / 1e6:.1f} MB")
+                total = offset + int(r.headers.get("Content-Length") or 0)
+                with open(tmp, "ab" if offset else "wb") as f:
+                    while block := r.read(CHUNK):
+                        f.write(block)
+                        failures = 0
+                if r.headers.get("Content-Length") and tmp.stat().st_size < total:
+                    raise IOError("connection closed early")
+            break
+        except urllib.error.HTTPError as err:
+            if err.code == 416 and offset:  # .part already complete (or bigger than the file): let sha256 decide
+                break
+            if err.code < 500:
+                raise
+            failures += 1
+            reason = err
+        except (urllib.error.URLError, http.client.HTTPException, OSError) as err:
+            failures += 1
+            reason = err
+        if failures > 10:
+            sys.exit(f"download of {url} failed 10 times in a row: {reason}")
+        wait = min(60, 5 * failures)
+        log(f"{dest.name}: {reason}; retry {failures}/10 in {wait}s")
+        time.sleep(wait)
     got = sha256_file(tmp)
     if got != sha256:
         tmp.unlink()
@@ -204,9 +254,19 @@ def install_clickhouse(_):
     downloads, home = ROOT / "downloads", ROOT / "clickhouse"
     for d in (downloads, home / "bin", home / "data", home / "tmp", home / "log", home / "user_files"):
         d.mkdir(parents=True, exist_ok=True)
-    tarball = fetch(CLICKHOUSE["url"], downloads / Path(CLICKHOUSE["url"]).name, CLICKHOUSE["sha256"])
-    binary = home / "bin" / f"clickhouse-{CLICKHOUSE['version']}"
+    flags = next((l.split(":", 1)[1].split() for l in open("/proc/cpuinfo") if l.startswith("flags")), [])
+    if "pclmulqdq" not in flags:
+        log("CPU has no PCLMULQDQ: using the ClickHouse amd64compat build")
+        binary = home / "bin" / f"clickhouse-{CLICKHOUSE_COMPAT['version']}"
+        # the compat build decompresses itself in place on first run, so its sha256 only matches before that:
+        # check the pin on download, then keep the binary
+        if not binary.exists():
+            fetch(CLICKHOUSE_COMPAT["url"], binary, CLICKHOUSE_COMPAT["sha256"])
+            binary.chmod(0o755)
+    else:
+        binary = home / "bin" / f"clickhouse-{CLICKHOUSE['version']}"
     if not binary.exists():
+        tarball = fetch(CLICKHOUSE["url"], downloads / Path(CLICKHOUSE["url"]).name, CLICKHOUSE["sha256"])
         member = f"clickhouse-common-static-{CLICKHOUSE['version']}/usr/bin/clickhouse"
         with tarfile.open(tarball) as t:
             src = t.extractfile(member)
@@ -226,6 +286,11 @@ def install_clickhouse(_):
 # --- Snapshot ---------------------------------------------------------------------------------------------------------
 
 def write_state(**fields):
+    with _state_lock:
+        _write_state(**fields)
+
+
+def _write_state(**fields):
     STATE.mkdir(parents=True, exist_ok=True)
     path = STATE / "snapshot.json"
     data = json.loads(path.read_text()) if path.exists() else {}
@@ -233,6 +298,38 @@ def write_state(**fields):
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, indent=1))
     tmp.replace(path)
+
+
+def fetch_range(url, start, end):
+    """Bytes start..end (inclusive) of url, resuming inside the range after a network error (40 tries in a row)."""
+    buf, failures = bytearray(), 0
+    while start + len(buf) <= end:
+        pos = start + len(buf)
+        try:
+            req = urllib.request.Request(url, headers={**UA, "Range": f"bytes={pos}-{end}"})
+            with urllib.request.urlopen(req, timeout=120) as r:
+                if r.status != 206 or not r.headers.get("Content-Range", "").startswith(f"bytes {pos}-"):
+                    raise IOError(f"range refused: HTTP {r.status} {r.headers.get('Content-Range')}")
+                while block := r.read(CHUNK):
+                    buf += block
+                    failures = 0
+            if start + len(buf) <= end:
+                raise IOError("connection closed early")
+        except (urllib.error.URLError, http.client.HTTPException, OSError) as err:
+            failures += 1
+            # the mirror (nginx) answers a share of requests with a bare 404 under parallel load and serves the same
+            # range a moment later: retry those quickly instead of backing off as for a real outage
+            brief = isinstance(err, urllib.error.HTTPError) and err.code in (404, 429, 502, 503, 504)
+            if failures > (200 if brief else 40):
+                raise RuntimeError(f"bytes {pos}-{end}: {err}") from err
+            wait = 2 if brief else min(300, 10 * failures)
+            if not brief or failures % 20 == 0:
+                log(f"network error at {pos / 1e9:.1f} GB ({err}, {failures} in a row); retrying that range in {wait}s")
+                write_state(last_error=str(err))
+            time.sleep(wait)
+    if len(buf) != end - start + 1:
+        raise RuntimeError(f"bytes {start}-{end}: got {len(buf)} bytes")
+    return buf
 
 
 def cmd_snapshot(_):
@@ -262,50 +359,51 @@ def cmd_snapshot(_):
                 bytes=0, error=None)
     tar = subprocess.Popen(["tar", "-xzf", "-", "-C", str(NODE)], stdin=subprocess.PIPE)
     md5 = hashlib.md5()
-    offset, failures, last_report, window_start, window_bytes = 0, 0, 0.0, time.time(), 0
+    offset, last_report, window_start, window_bytes = 0, 0.0, time.time(), 0
 
-    while offset < size:
-        headers = dict(UA)
-        if offset:
-            headers["Range"] = f"bytes={offset}-"
+    def fatal(msg, **state):
+        # os._exit: a plain exit would wait for the download threads still retrying
+        write_state(status="failed", **state)
+        log(msg)
+        tar.kill()
+        os._exit(1)
+
+    # The mirror caps each connection (~3.5 MB/s) but not the host (~20 MB/s over 8), so SNAPSHOT_WORKERS threads
+    # fetch PIECE-sized ranges ahead while this thread feeds them to tar and md5 strictly in order.
+    pieces = iter([(s, min(s + SNAPSHOT_PIECE, size) - 1) for s in range(0, size, SNAPSHOT_PIECE)])
+    log(f"{SNAPSHOT_WORKERS} parallel connections, {SNAPSHOT_PIECE // 1024**2} MB pieces")
+    pool = ThreadPoolExecutor(SNAPSHOT_WORKERS)
+    pending = collections.deque(pool.submit(fetch_range, url, *p) for p in itertools.islice(pieces, SNAPSHOT_WORKERS * 3))
+    while pending:
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120) as r:
-                if offset and (r.status != 206 or not r.headers.get("Content-Range", "").startswith(f"bytes {offset}-")):
-                    raise IOError(f"resume refused: HTTP {r.status} {r.headers.get('Content-Range')}")
-                while True:
-                    block = r.read(CHUNK)
-                    if not block:
-                        break
-                    tar.stdin.write(block)
-                    md5.update(block)
-                    offset += len(block)
-                    window_bytes += len(block)
-                    failures = 0
-                    now = time.time()
-                    if now - last_report >= 30:
-                        rate = window_bytes / max(now - window_start, 1)
-                        free = shutil.disk_usage(NODE).free
-                        write_state(bytes=offset, percent=round(100 * offset / size, 2), rate_mb_s=round(rate / 1e6, 1),
-                                    eta_hours=round((size - offset) / max(rate, 1) / 3600, 1), free_disk_tb=round(free / 1e12, 3))
-                        if now - window_start > 600:
-                            window_start, window_bytes = now, 0
-                        last_report = now
-                        if free < DISK_RESERVE:
-                            raise SystemExit("disk reserve reached: stopping the stream")
-            if offset < size:
-                raise IOError("connection closed early")
+            data = pending.popleft().result()
+        except Exception as err:  # noqa: BLE001 — fetch_range already retried
+            fatal(f"gave up at byte {offset}: {err}", error=f"gave up after repeated network errors: {err}")
+        nxt = next(pieces, None)
+        if nxt:
+            pending.append(pool.submit(fetch_range, url, *nxt))
+        try:
+            tar.stdin.write(data)
         except BrokenPipeError:
-            write_state(status="failed", error="tar exited while streaming")
-            sys.exit("tar exited while streaming (see journal)")
-        except (urllib.error.URLError, http.client.HTTPException, OSError) as err:
-            failures += 1
-            if failures > 40:
-                write_state(status="failed", error=f"gave up after repeated network errors: {err}")
-                sys.exit(f"gave up at byte {offset}: {err}")
-            wait = min(300, 10 * failures)
-            log(f"network error at {offset / 1e9:.1f} GB ({err}); resuming in {wait}s")
-            write_state(last_error=str(err))
-            time.sleep(wait)
+            fatal("tar exited while streaming (see journal)", error="tar exited while streaming")
+        md5.update(data)
+        offset += len(data)
+        window_bytes += len(data)
+        del data
+        now = time.time()
+        if now - last_report >= 30:
+            rate = window_bytes / max(now - window_start, 1)
+            free = shutil.disk_usage(NODE).free
+            write_state(bytes=offset, percent=round(100 * offset / size, 2), rate_mb_s=round(rate / 1e6, 1),
+                        eta_hours=round((size - offset) / max(rate, 1) / 3600, 1), free_disk_tb=round(free / 1e12, 3))
+            if now - window_start > 600:
+                window_start, window_bytes = now, 0
+            last_report = now
+            if free < DISK_RESERVE:
+                fatal("disk reserve reached: stopping the stream", error="disk reserve reached")
+    pool.shutdown()
+    if offset != size:
+        fatal(f"stream ended at byte {offset} of {size}", error="short stream")
 
     tar.stdin.close()
     if tar.wait() != 0:

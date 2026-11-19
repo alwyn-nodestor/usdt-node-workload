@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+# blockline-usdt: the status page (127.0.0.1:8288) live in the terminal, every section of it. Read-only.
+#
+#   bin/usdt-live [-n SECONDS] [-l snapshot|node|etl] [--once]
+#
+#   -n S      redraw every S seconds (default 5, like the page)
+#   -l UNIT   which journal the Log section shows first (default snapshot)
+#   --once    print one frame and exit (no screen switching; for pipes and cron mail)
+#
+# Keys while running: 1 / 2 / 3 show the snapshot / node / etl log, r redraws now, q quits.
+# Needs the dashboard unit (blockline-usdt-dashboard) running, plus curl and jq.
+set -uo pipefail
+URL=${USDT_DASHBOARD_URL:-http://127.0.0.1:8288}
+every=5 logunit=snapshot once=0
+while [ $# -gt 0 ]; do
+  case $1 in
+    -n) every=$2; shift ;;
+    -l) logunit=$2; shift ;;
+    --once) once=1 ;;
+    -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
+    *) echo "unknown option: $1 (see --help)"; exit 2 ;;
+  esac
+  shift
+done
+for tool in curl jq; do command -v $tool >/dev/null || { echo "$tool is not installed"; exit 2; }; done
+
+if [ -t 1 ]; then G=$'\e[32m' Y=$'\e[33m' R=$'\e[31m' C=$'\e[36m' D=$'\e[2m' B=$'\e[1m' N=$'\e[0m'
+else G= Y= R= C= D= B= N=; fi
+# state files carry local wall-clock times ("YYYY-MM-DD HH:MM:SS"); jq's mktime reads them as UTC
+tz=$(date +%z); tzoff=$(( (${tz:0:1}1) * (10#${tz:1:2} * 3600 + 10#${tz:3:2} * 60) ))
+
+# shellcheck disable=SC2016
+JQ='
+def c(k): $col[k];
+def paint(k): c(k) + . + c("N");
+def num: if . == null then "–" else (round | tostring | [match("\\d{1,3}(?=(\\d{3})*$)"; "g").string] | join(",")) end;
+def fx(n): if . == null then "–" else (. * pow(10; n) | round) / pow(10; n) | tostring end;
+def bytes: if . == null then "–" else
+  {b: (. | tonumber), i: 0} | until(.b < 1000 or .i == 4; .b /= 1000 | .i += 1)
+  | .i as $i | (.b | fx(if $i >= 3 then 2 else 1 end)) + " " + (["B","KB","MB","GB","TB"][$i]) end;
+def dur: if . == null then "–" else (if . < 0 then 0 else . end | round) as $s
+  | ($s / 86400 | floor) as $d | ($s % 86400 / 3600 | floor) as $h | ($s % 3600 / 60 | floor) as $m
+  | if $d > 0 then "\($d)d \($h)h" elif $h > 0 then "\($h)h \($m)m" elif $m > 0 then "\($m)m \($s % 60)s" else "\($s)s" end end;
+def at: if . == null then "–" else (strptime("%Y-%m-%d %H:%M:%S") | mktime) - $tzoff end;
+def ago($now): if . == null then "–" else ($now - .) | dur + " ago" end;
+def rep(s; n): [range(0; ([n, 0] | max))] | map(s) | join("");
+def bar(f; w): ([([f // 0, 0] | max), 1] | min) as $f | (($f * w) | round) as $k
+  | (rep("█"; $k) | paint("G")) + (rep("░"; w - $k) | paint("D"));
+def kv(k; v): "    " + (k + "                  ")[0:18] + v;
+def pill(t; k): "[" + t + "]" | paint(k);
+def head(t; p): "\n" + (t | paint("B")) + "  " + p;
+def spark(pts; lbl):
+  [range(1; pts | length) as $i | pts[$i - 1] as $a | pts[$i] as $b
+   | select($a[1] != null and $b[1] != null and $b[0] > $a[0] and $b[1] >= $a[1])
+   | ($b[1] - $a[1]) / ($b[0] - $a[0])] as $r
+  | if ($r | length) < 2 then "    " + (lbl + ": fills in as the page server samples (one point a minute)" | paint("D"))
+    else ($r | .[-60:]) as $r | ($r | max) as $mx | ($r | min) as $mn
+    | "    " + ($r | map(["▁","▂","▃","▄","▅","▆","▇","█"][if $mx == $mn then 3 else ((. - $mn) / ($mx - $mn) * 7 | round) end]) | join("") | paint("C"))
+      + "  " + (lbl + " · now " + ($r[-1] | fx(1)) + ", peak " + ($mx | fx(1)) | paint("D")) end;
+def ustate: if . == null or .LoadState == "not-found" then ["not installed", "D"]
+  elif .ActiveState == "active" then [if .SubState == "exited" then "done" else "running" end, "G"]
+  elif .ActiveState == "activating" then ["running", "C"]
+  elif .ActiveState == "failed" then ["failed", "R"]
+  else [.ActiveState // "unknown", "D"] end;
+
+.now as $now | .snapshot as $s | .node as $n | .etl as $e | .units as $U | .series as $ser
+| ($U["blockline-usdt-snapshot"] | ustate) as $sunit
+| ($U["blockline-usdt-node"] | ustate) as $nunit
+| ($U["blockline-usdt-etl"] | ustate) as $eunit
+
+# ---- snapshot
+| (if .snapshot_verified then {step: "done", pill: pill("verified"; "G"),
+     body: (["    " + ("md5 matched" | paint("G"))] + (if $s then [kv("Size"; $s.size | bytes), kv("Started"; $s.started), kv("Finished"; $s.updated)] else [] end))}
+   elif $s == null then {step: "wait", pill: pill("not started"; "D"),
+     body: ["    No snapshot state yet. Start it with: sudo systemctl start blockline-usdt-snapshot" | paint("D")]}
+   else (if $s.size then $s.bytes / $s.size else 0 end) as $f | ($now - ($s.updated | at)) as $stale
+     | (if ($s.error or $s.status == "failed") then ["failed", "R"]
+        elif $sunit[0] != "running" then ["\($s.status) (unit \($sunit[0]))", "Y"]
+        elif $stale > 600 then ["stalled?", "Y"] else [$s.status, "C"] end) as $p
+     | {step: (if $p[1] == "R" then "fail" else "run" end), pill: pill($p[0]; $p[1]),
+        body: ["    " + ($f * 100 | fx(2) + " %" | paint("B")) + "  " + bar($f; 40),
+          kv("Downloaded"; "\($s.bytes | bytes) of \($s.size | bytes)"),
+          kv("Rate"; if $s.rate_mb_s then "\($s.rate_mb_s) MB/s" else "–" end),
+          kv("ETA"; if $s.eta_hours then ($s.eta_hours * 3600 | dur) + "  (≈ " + ($now + $s.eta_hours * 3600 | strflocaltime("%a %d %b %H:%M")) + ")" else "–" end),
+          kv("Started"; $s.started // "–"),
+          kv("Last report"; ($s.updated | at | ago($now)) + (if $stale > 600 then (" (stale)" | paint("Y")) else "" end)),
+          kv("Free disk"; if $s.free_disk_tb then "\($s.free_disk_tb) TB" else "–" end),
+          kv("md5"; $s.md5_expected // "–"),
+          (if $s.last_error then kv("Last retry"; $s.last_error | paint("D")) else empty end),
+          spark([$ser[] | [.t, .snap]] | map(if .[1] then [.[0], .[1] / 1e6] else . end); "MB/s"),
+          (if $s.error then "    " + ($s.error | paint("R")) else empty end)]}
+   end) as $SNAP
+
+# ---- node
+| (if ($n.up | not) then
+     {step: (if $nunit[1] == "R" then "fail" elif $nunit[0] == "running" then "run" else "wait" end),
+      pill: (if $nunit[0] == "running" then pill("starting"; "C") elif $nunit[1] == "R" then pill("failed"; "R")
+             elif .snapshot_verified then pill("stopped"; "Y") else pill("waiting"; "D") end),
+      body: ["    " + (if $nunit[0] == "running" then "The unit is up; the API on 127.0.0.1:18090 is not answering yet (java-tron takes a few minutes to open the database)."
+                       else "Waits for the verified snapshot. The unit starts by itself when the md5 matches." end | paint("D"))]}
+   else $n.head.behind_s as $behind | ($behind != null and $behind < 60) as $synced
+     | (if $n.solid.number != null then $n.head.number - $n.solid.number else null end) as $gap
+     | [$ser[] | select(.head != null and .t >= $now - 3600)] as $rec
+     | (if ($rec | length) > 1 then ($rec[-1].head - $rec[0].head) / ([($rec[-1].t - $rec[0].t), 1] | max) else null end) as $rate
+     | (if $rate != null and $rate > 1/3 then ($n.expected_head - $n.head.number) / ($rate - 1/3) else null end) as $eta
+     | {step: (if $synced then "done" else "run" end),
+        pill: (if $synced then pill("synced"; "G") else pill("catching up"; "C") end),
+        body: ["    " + ($n.head.number | num | paint("B")) + "  head block · " + (if $synced then "at the tip" else ($behind | dur) + " behind the clock" end),
+          (if $synced then empty else "    " + bar(if $n.expected_head then $n.head.number / $n.expected_head else 0 end; 40) end),
+          kv("Solidified"; ($n.solid.number | num) + (if $gap != null then " (\($gap) behind head)" | paint("D") else "" end)),
+          kv("Blocks to go"; if $synced then "0" else "≈ " + ($n.expected_head - $n.head.number | num) end),
+          (if $synced then empty else kv("Catch-up ETA"; if $rate == null then "–" elif $eta == null then "\($rate | fx(1)) blocks/s: not gaining on the chain"
+             else ($eta | dur) + " at \($rate | fx(1)) blocks/s" end) end),
+          kv("Peers"; "\($n.peers | num) connected · \($n.active_peers | num) active"),
+          kv("Version"; $n.version // "–"),
+          kv("Memory (unit)"; $U["blockline-usdt-node"].MemoryCurrent | bytes),
+          kv("Up since"; $U["blockline-usdt-node"].ActiveEnterTimestamp // "–"),
+          spark([$ser[] | [.t, .head]]; "blocks/s")]}
+   end) as $NODE
+
+# ---- ETL
+| (if $e == null then {phases: ["wait","wait","wait","wait"], pill: pill("not started"; "D"),
+     body: ["    The ETL starts after the node is at the tip (usdt-up step 8). It reports through state/etl.json." | paint("D")]}
+   elif ($e.error and ($e.phase | not)) then {phases: ["wait","wait","wait","wait"], pill: pill("unreadable"; "R"), body: ["    " + ($e.error | paint("R"))]}
+   else ($now - ($e.updated | at)) as $stale | ($e.live // {}) as $l | ($e.epochs // {}) as $ep | $e.history as $h
+     | (($e.phase // "") | tostring | .[0:1]) as $ph | (["0","1","2","3"] | index($ph)) as $at
+     | ([range(0; 4) | if $at == null then "wait" elif . < $at then "done" elif . == $at then (if $e.error then "fail" else "run" end) else "wait" end]) as $base
+     | (reduce (($e.phases // {}) | to_entries[]) as $kv ($base; (["0","1","2","3"] | index($kv.key)) as $i | if $i != null then .[$i] = $kv.value else . end)) as $phases
+     | {phases: $phases,
+        pill: (if $e.error then pill("error"; "R") elif $stale > 300 then pill("stalled?"; "Y")
+               else pill($e.state // $eunit[0]; if $eunit[1] == "G" then "G" else "C" end) end),
+        body: (["    " + ($l.last_block | num | paint("B")) + "  last block extracted (live) · "
+                + (if $l.lag_blocks == null then "–" elif $l.lag_blocks < 200 then "at the solidified head" else ($l.lag_blocks | num) + " blocks behind solidified" end),
+          kv("Started at"; "block " + ($l.start_block | num)),
+          kv("Blocks extracted"; $l.blocks_done | num),
+          kv("Speed"; if $l.blocks_per_s then ($l.blocks_per_s | fx(1)) + " blocks/s" else "–" end),
+          kv("Solidified head"; $l.solid_head | num),
+          kv("Epochs sealed"; if $ep.total then "\($ep.sealed | num) of \($ep.total | num)" else ($ep.sealed | num) end),
+          kv("Last report"; $e.updated | at | ago($now)),
+          (if $h then (if $h.target_block then $h.next_block / $h.target_block else 0 end) as $hf
+             | "    History " + ($hf * 100 | fx(2)) + " %  " + bar($hf; 30), kv("Done"; "\($h.next_block | num) of \($h.target_block | num) blocks"),
+               kv("Speed"; "\($h.blocks_per_s | fx(1)) blocks/s · \($h.workers | num) workers"),
+               kv("Left"; if $h.target_block and $h.blocks_per_s then ($h.target_block - $h.next_block) / $h.blocks_per_s | dur else "–" end)
+           else "    " + ("History (Phase 2, block 0 → \($l.start_block | num)) not started: it waits for the Phase 0 gate." | paint("D")) end)]
+          + (if $e.checks then ["", "    " + ("Check                                   Result" | paint("D"))]
+               + [$e.checks | to_entries[] | "    " + (.key + "                                        ")[0:40]
+                  + (.value | paint(if . == "pass" then "G" elif . == "fail" then "R" else "D" end))] else [] end)
+          + (if ($e.storage // {} | length) > 0 then
+               ["", "    " + ("ClickHouse table              Rows            On disk" | paint("D"))]
+               + [$e.storage | to_entries | sort_by(-.value.bytes)[]
+                  | "    " + (.key + "                              ")[0:30] + ((.value.rows | num) + "                ")[0:16] + (.value.bytes | bytes)]
+               + ["    " + ("Total                                         " | paint("B")) + ([$e.storage[].bytes] | add | bytes | paint("B"))]
+             elif $e.rows then ["", "    " + ("Tier 2 table                  Rows" | paint("D"))]
+               + [$e.rows | to_entries | map(select(.key != "block_headers")) | sort_by(-.value)[] | "    " + (.key + "                              ")[0:30] + (.value | num)]
+             else [] end)
+          + [spark([$ser[] | [.t, .etl]]; "ETL blocks/s")]
+          + (if $e.error then ["    " + ($e.error | paint("R"))] else [] end))}
+   end) as $ETL
+
+# ---- pipeline
+| [["Snapshot", $SNAP.step], ["Node catch-up", $NODE.step], ["Phase 0", $ETL.phases[0]], ["Phase 1 live", $ETL.phases[1]],
+   ["Phase 2 history", $ETL.phases[2]], ["Phase 3 go lite", $ETL.phases[3]]]
+  | map(.[1] as $st | (if $st == "done" then "✔ " elif $st == "run" then "▶ " elif $st == "fail" then "✖ " else "· " end) + .[0]
+        | paint(if $st == "done" then "G" elif $st == "run" then "C" elif $st == "fail" then "R" else "D" end))
+  | join(("  →  " | paint("D"))) as $PIPE
+
+# ---- host
+| $root.disk as $dk | ($dk.used / $dk.total) as $du | $root.traffic as $tr | $root.memory as $mem
+| [ head("Pipeline"; ""), "    " + $PIPE,
+    head("Snapshot download"; $SNAP.pill), $SNAP.body[],
+    head("Node"; $NODE.pill), $NODE.body[],
+    head("ETL → ClickHouse"; $ETL.pill), $ETL.body[],
+    head("Host"; ""),
+    "    Disk " + ($du * 100 | fx(1)) + " %  " + bar($du; 40) + ("  alert 80 %, pause 90 %" | paint("D")),
+    kv("Disk"; "\($dk.used | bytes) used · \($dk.free | bytes) free of \($dk.total | bytes)"),
+    kv("Traffic"; if $tr == null then "–" elif $tr.error then ($tr.error | paint("R")) else "\($tr.used_gb | num) GB (\($tr.month))" end),
+    (if $tr and ($tr.error | not) then kv("Rx / Tx"; "\($tr.rx | bytes) / \($tr.tx | bytes)") else empty end),
+    kv("Memory"; if $mem.total then "\($mem.total - $mem.available | bytes) used of \($mem.total | bytes)" else "–" end),
+    kv("Load"; $root.load | map(fx(2)) | join(" · ")),
+    head("Services"; ""),
+    "    " + ("Unit                          State                 Since                         Memory      Restarts" | paint("D")),
+    ($U | to_entries[] | (.value | ustate) as $st
+      | "    " + (.key + "                              ")[0:30]
+        + ((($st[0] + (if .value.SubState and $st[0] != "not installed" then " (\(.value.SubState))" else "" end)) + "                      ")[0:22] | paint($st[1]))
+        + ((.value.ActiveEnterTimestamp // "" | if . == "" then "–" else . end) + "                              ")[0:30]
+        + ((.value.MemoryCurrent | bytes) + "            ")[0:12] + (.value.NRestarts | num))
+  ] | join("\n")
+'
+
+frame() {
+  local status out
+  status=$(curl -sf -m 8 "$URL/api/status") || {
+    printf '%sblockline-usdt%s  %s\n\n  %sthe status page does not answer on %s%s\n  start it: sudo systemctl start blockline-usdt-dashboard\n' \
+      "$B" "$N" "$(date '+%F %T')" "$R" "$URL" "$N"; return; }
+  printf '%sblockline-usdt%s  %s%s · every %ss · keys: 1 snapshot log  2 node log  3 etl log  r redraw  q quit%s\n' \
+    "$B" "$N" "$D" "$(date '+%F %T %Z')" "$every" "$N"
+  out=$(jq -r --argjson tzoff "$tzoff" \
+    --argjson col "$(jq -n --arg G "$G" --arg Y "$Y" --arg R "$R" --arg C "$C" --arg D "$D" --arg B "$B" --arg N "$N" '$ARGS.named')" \
+    '. as $root | '"$JQ" <<<"$status" 2>&1) || out="  ${R}could not render the status: $out$N"
+  printf '%s\n' "$out"
+  # log tail fills whatever rows are left on the screen
+  local used rows cols
+  used=$(( $(printf '%s\n' "$out" | wc -l) + 4 ))
+  if [ -t 1 ]; then rows=$(tput lines 2>/dev/null || echo 50); cols=$(tput cols 2>/dev/null || echo 160); else rows=60 cols=400; fi
+  local n=$(( rows - used - 1 )); [ "$once" = 1 ] && n=20; [ $n -lt 5 ] && n=5
+  printf '\n%sLog%s  %s%s%s\n' "$B" "$N" "$C" "journalctl -u blockline-usdt-$logunit" "$N"
+  curl -sf -m 8 "$URL/api/log?unit=$logunit" | jq -r '.[]' 2>/dev/null | tail -n "$n" \
+    | sed -E 's/^[0-9-]+T([0-9:]{8})[^ ]* [^ ]+ [^:]+: ([0-9-]{10} [0-9:]{8} )?/\1  /' | cut -c1-$(( cols - 2 )) | sed "s/^/  $D/; s/\$/$N/" \
+    || printf '  %slog unavailable%s\n' "$D" "$N"
+}
+
+if [ "$once" = 1 ] || [ ! -t 1 ]; then frame; exit 0; fi
+
+tput smcup 2>/dev/null; tput civis 2>/dev/null
+trap 'tput cnorm 2>/dev/null; tput rmcup 2>/dev/null; exit 0' INT TERM EXIT
+while :; do
+  buf=$(frame)
+  printf '\e[H\e[2J%s' "$buf"
+  if read -rsn1 -t "$every" key; then
+    case $key in
+      q|Q) break ;;
+      1) logunit=snapshot ;; 2) logunit=node ;; 3) logunit=etl ;;
+    esac
+  fi
+done

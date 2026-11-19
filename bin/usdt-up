@@ -17,6 +17,8 @@
 # Stopping this script stops nothing: the snapshot and the node run under systemd. Log: state/logs/up.log.
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
+# shellcheck source=../lib/compat.sh
+. "$here/lib/compat.sh"
 ROOT=${BLOCKLINE_USDT_ROOT:-/srv/blockline-usdt}
 NODE=$ROOT/node
 STATE=$ROOT/state
@@ -40,19 +42,21 @@ done
 
 mkdir -p "$STATE/logs" 2>/dev/null || true
 exec > >(tee -a "$STATE/logs/up.log") 2>&1
-exec 9>"$STATE/up.lock"
-flock -n 9 || { echo "another usdt-up is running (lock $STATE/up.lock)"; exit 1; }
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$STATE/up.lock"; flock -n 9
+else
+  mkdir "$STATE/up.lock.d" 2>/dev/null
+fi || { echo "another usdt-up is running (lock $STATE/up.lock)"; exit 1; }
+command -v flock >/dev/null 2>&1 || trap 'rmdir "$STATE/up.lock.d" 2>/dev/null' EXIT
 
 log() { printf '%s %s\n' "$(date -u '+%F %T')" "$*"; }
 step() { printf '\n%s == %s\n' "$(date -u '+%F %T')" "$*"; }
 die() { log "STOP: $*"; exit 1; }
 
-# usdt's own steps run directly as usdt, or through `sudo -u usdt` for debian (bootstrap/usdt-bootstrap.sh grants it)
-as_usdt() { if [ "$(id -un)" = usdt ]; then "$@"; else sudo -n -u usdt "$@"; fi; }
-# unit control is limited to the exact command lines in /etc/sudoers.d/blockline-usdt (no extra flags)
-ctl() { sudo -n /usr/bin/systemctl "$1" "blockline-usdt-$2"; }
-active() { [ "$(systemctl show -p ActiveState --value "blockline-usdt-$1.service")" = active ]; }
-installed() { [ "$(systemctl show -p LoadState --value "blockline-usdt-$1.service")" = loaded ]; }
+as_usdt() { run_as usdt "$@"; }
+ctl()      { svc_ctl "$1" "$2"; }
+active()   { svc_active "$1"; }
+installed(){ svc_installed "$1"; }
 # head (or solidified) block as "number timestamp_ms"; empty when the API does not answer
 block() { curl -sf -m 5 "http://$1/$2/getnowblock" | jq -r '.block_header.raw_data | "\(.number) \(.timestamp)"' 2>/dev/null; }
 hm() { local s=${1%.*}; [ "$s" -lt 0 ] && s=0; printf '%dh%02dm' $((s / 3600)) $((s % 3600 / 60)); }
@@ -61,8 +65,8 @@ hm() { local s=${1%.*}; [ "$s" -lt 0 ] && s=0; printf '%dh%02dm' $((s / 3600)) $
 step "1/9 preflight"
 case $(id -un) in usdt|debian|root) ;; *) die "run as usdt or debian" ;; esac
 [ "$(id -un)" = root ] && die "run as usdt or debian, not root (only the bootstrap needs root)"
-for tool in curl jq flock python3; do command -v $tool >/dev/null || die "$tool is not installed"; done
-free_tb=$(df --output=avail -B1 "$ROOT" | tail -1 | awk '{printf "%.2f", $1/1e12}')
+for tool in curl jq python3; do command -v $tool >/dev/null || die "$tool is not installed"; done
+free_tb=$(awk -v b="$(free_bytes "$ROOT")" 'BEGIN { printf "%.2f", b/1e12 }')
 log "free disk at $ROOT: $free_tb TB"
 [ -x "$here/.venv/bin/python" ] || die "no ETL venv at $here/.venv (docs/ETL.md: uv venv + pyarrow, pycryptodome)"
 
@@ -168,7 +172,7 @@ step "8/9 ETL"
 active etl || ctl start etl
 for _ in $(seq 20); do
   upd=$(jq -r '.updated // empty' "$STATE/etl.json" 2>/dev/null || true)
-  [ -n "$upd" ] && [ $(( $(date +%s) - $(date -ud "$upd" +%s) )) -lt 120 ] && break
+  [ -n "$upd" ] && [ $(( $(date +%s) - $(date_to_epoch "$upd") )) -lt 120 ] && break
   sleep 15
 done
 active etl || die "the ETL unit is not running: journalctl -u blockline-usdt-etl -n 50"

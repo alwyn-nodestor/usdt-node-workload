@@ -14,20 +14,22 @@
 #                    sudo systemctl start blockline-usdt-snapshot     # ~1.5 days; starts the node when verified
 set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "run with sudo"; exit 1; }
+[ "$(uname -s)" = Linux ] || { echo "the bootstrap is Linux-only (the operational scripts work on other platforms)"; exit 1; }
 SRC=/home/debian/projects/blockline-usdt
 ROOT=/srv/blockline-usdt
 REPO=/home/usdt/blockline-usdt
+# shellcheck source=../lib/compat.sh
+. "$SRC/lib/compat.sh"
 
 echo "== packages"
-apt-get update -q
-DEBIAN_FRONTEND=noninteractive apt-get install -y -q git curl gnupg acl ca-certificates python3
+pkg_install git curl gnupg acl ca-certificates python3
 
 echo "== user and data root"
-id usdt >/dev/null 2>&1 || useradd --create-home --shell /bin/bash usdt
+create_user usdt
 chmod 750 /home/usdt
 install -d -o usdt -g usdt -m 750 "$ROOT"
 for d in node state downloads app clickhouse; do install -d -o usdt -g usdt -m 750 "$ROOT/$d"; done
-free_tb=$(df --output=avail -B1 "$ROOT" | tail -1 | awk '{printf "%.2f", $1/1e12}')
+free_tb=$(awk -v b="$(free_bytes "$ROOT")" 'BEGIN { printf "%.2f", b/1e12 }')
 echo "   free disk at $ROOT: $free_tb TB (the extracted snapshot needs about 4.1 TB plus a 0.2 TB reserve)"
 
 echo "== repository"
@@ -36,28 +38,41 @@ if [ -d "$REPO/.git" ]; then
 else
   git -c safe.directory='*' clone -q "$SRC" "$REPO"
   chown -R usdt:usdt "$REPO"
-  runuser -u usdt -- git -C "$REPO" config user.name "Nodestors Tech"
-  runuser -u usdt -- git -C "$REPO" config user.email "tech@nodestors.com"
+  run_as usdt git -C "$REPO" config user.name "Nodestors Tech"
+  run_as usdt git -C "$REPO" config user.email "tech@nodestors.com"
   echo "   cloned into $REPO"
 fi
-setfacl -m u:usdt:x /home/debian /home/debian/projects
-setfacl -R -m u:usdt:rX "$SRC"
+if command -v setfacl >/dev/null 2>&1; then
+  setfacl -m u:usdt:x /home/debian /home/debian/projects
+  setfacl -R -m u:usdt:rX "$SRC"
+else
+  chmod o+x /home/debian /home/debian/projects
+  chmod -R o+rX "$SRC"
+fi
 # both forms: `git pull` from the clone checks the .git path of the source
 for p in "$SRC" "$SRC/.git"; do
-  runuser -u usdt -- git config --global --get-all safe.directory | grep -qxF "$p" \
-    || runuser -u usdt -- git config --global --add safe.directory "$p"
+  run_as usdt git config --global --get-all safe.directory | grep -qxF "$p" \
+    || run_as usdt git config --global --add safe.directory "$p"
 done
 
 echo "== debian may act as usdt"
-# The node database (about 900,000 files) and ClickHouse's data inherit these through the default ACLs set on their
-# parents, so a re-run skips them instead of rewriting every file's ACL on a slow disk.
-for d in /home/usdt "$ROOT"; do
-  # a file that a running service deletes during the scan is not an error worth stopping the bootstrap for
-  find "$d" \( -path "$ROOT/node/output-directory" -o -path "$ROOT/clickhouse/data" \) -prune \
-    -o -exec setfacl -m u:debian:rwX {} + 2>/dev/null || echo "   (some files changed during the ACL scan; skipped)"
-  find "$d" \( -path "$ROOT/node/output-directory" -o -path "$ROOT/clickhouse/data" \) -prune \
-    -o -type d -exec setfacl -m d:u:debian:rwX -m d:u:usdt:rwX {} + 2>/dev/null || true
-done
+if command -v setfacl >/dev/null 2>&1; then
+  # The node database (about 900,000 files) and ClickHouse's data inherit these through the default ACLs set on their
+  # parents, so a re-run skips them instead of rewriting every file's ACL on a slow disk.
+  for d in /home/usdt "$ROOT"; do
+    find "$d" \( -path "$ROOT/node/output-directory" -o -path "$ROOT/clickhouse/data" \) -prune \
+      -o -exec setfacl -m u:debian:rwX {} + 2>/dev/null || echo "   (some files changed during the ACL scan; skipped)"
+    find "$d" \( -path "$ROOT/node/output-directory" -o -path "$ROOT/clickhouse/data" \) -prune \
+      -o -type d -exec setfacl -m d:u:debian:rwX -m d:u:usdt:rwX {} + 2>/dev/null || true
+  done
+else
+  echo "   setfacl not available; using group permissions (install acl package for fine-grained ACLs)"
+  usermod -aG usdt debian 2>/dev/null || true
+  for d in /home/usdt "$ROOT"; do
+    find "$d" \( -path "$ROOT/node/output-directory" -o -path "$ROOT/clickhouse/data" \) -prune \
+      -o -exec chmod g+rwX {} + 2>/dev/null || true
+  done
+fi
 
 echo "== systemd units"
 for unit in blockline-usdt-snapshot.service blockline-usdt-node.service blockline-usdt-dashboard.service \

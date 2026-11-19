@@ -97,7 +97,8 @@ svc_active() {
   case $_COMPAT_OS in
     Linux)
       if command -v systemctl >/dev/null 2>&1; then
-        [ "$(_svc_prop "$1" ActiveState)" = active ]
+        # a oneshot (the snapshot) stays "activating" for its whole run; that is running, not stopped
+        case $(_svc_prop "$1" ActiveState) in active|activating|reloading) return 0 ;; *) return 1 ;; esac
       else
         service "$(_svc "$1")" status >/dev/null 2>&1
       fi ;;

@@ -105,7 +105,8 @@ else
     log "snapshot: $base, $(awk -v b="$size" 'BEGIN { printf "%.2f TB", b/1e12 }')"
     # `systemctl start` waits for a oneshot to finish (about 37 h) and sudoers allows no --no-block, so it goes in the
     # background; ending this script leaves the job running in systemd
-    ctl start snapshot & disown
+    # 9>&-: the background job must not inherit the lock, or a later usdt-up would think this one still runs
+    ctl start snapshot 9>&- & disown
     sleep 10
   fi
   log "streaming; progress every 10 minutes (the status page shows it live)"

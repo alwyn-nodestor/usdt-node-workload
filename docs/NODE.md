@@ -26,6 +26,18 @@ after go-lite). Heap 12 GB; no soft memory limit (the page cache of the database
 
 ## Running it
 
+One command does the whole sequence (units → install → ClickHouse → snapshot → node → wait for sync → ETL → status
+page) and is safe to re-run; each step checks before it acts, and stopping the script stops nothing under systemd:
+
+```sh
+bin/usdt-up                      # as usdt (or debian); log in state/logs/up.log
+bin/usdt-status                  # one-screen check; exit 0 OK, 1 working, 2 attention
+bin/usdt-status --watch          # live view in the terminal (the status page on 8288 is the graphical one)
+```
+
+The node was deleted on 2026-11-16 (`/srv/blockline-usdt/sample/README.md`), along with its units: run the root
+bootstrap first. A new snapshot is a fresh ~3.9 TB download. The steps by hand:
+
 ```sh
 sudo bash /home/debian/projects/blockline-usdt/bootstrap/usdt-bootstrap.sh     # once, root
 sudo -u usdt /home/usdt/blockline-usdt/bin/blockline-usdt install               # JDK, jars, config

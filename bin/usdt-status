@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# blockline-usdt: one-screen health check of the node and everything around it. Read-only.
+#
+#   bin/usdt-status              print once; exit 0 synced and healthy, 1 working (snapshot / catch-up), 2 something down
+#   bin/usdt-status --watch [S]  redraw every S seconds (default 10) until Ctrl-C
+#   bin/usdt-status --json       the status page's JSON feed (127.0.0.1:8288/api/status), when the page runs
+set -uo pipefail
+ROOT=${BLOCKLINE_USDT_ROOT:-/srv/blockline-usdt}
+NODE=$ROOT/node
+STATE=$ROOT/state
+HTTP=127.0.0.1:18090
+SOLID=127.0.0.1:18091
+CH=127.0.0.1:18123
+SYNC_BEHIND_S=60       # same threshold as the status page's "synced"
+
+case ${1:-} in
+  --watch|-w)
+    every=${2:-10}
+    while :; do out=$(FORCE_COLOR=1 "$0"); clear; printf '%s\n\n(every %ss, Ctrl-C to stop)\n' "$out" "$every"; sleep "$every"; done ;;
+  --json) exec curl -sf -m 10 http://127.0.0.1:8288/api/status ;;
+  -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
+esac
+
+if [ -t 1 ] || [ -n "${FORCE_COLOR:-}" ]; then G=$'\e[32m' Y=$'\e[33m' R=$'\e[31m' D=$'\e[2m' B=$'\e[1m' N=$'\e[0m'
+else G= Y= R= D= B= N=; fi
+worst=0
+# row LABEL LEVEL TEXT [DETAIL]: LEVEL 0 ok (green), 1 working (yellow), 2 down (red), - neutral; DETAIL is dimmed.
+# The worst level seen is the exit code.
+row() {
+  local c=
+  case $2 in 0) c=$G ;; 1) c=$Y ;; 2) c=$R ;; esac
+  if [ "$2" != - ] && [ "$2" -gt "$worst" ]; then worst=$2; fi
+  printf '  %-12s %s%s%s%s%s%s\n' "$1" "$c" "$3" "$N" "${4:+ $D}" "${4:-}" "${4:+$N}"
+}
+hm() { local s=${1%.*}; [ "$s" -lt 0 ] && s=0; printf '%dh%02dm' $((s / 3600)) $((s % 3600 / 60)); }
+num() { printf "%'d" "$1" 2>/dev/null || printf '%s' "$1"; }
+block() { curl -sf -m 5 "http://$1/$2/getnowblock" | jq -r '.block_header.raw_data | "\(.number) \(.timestamp)"' 2>/dev/null; }
+verified=$([ -e "$NODE/.snapshot-verified" ] && echo 1 || echo 0)
+
+printf '%sblockline-usdt%s  %s\n\n' "$B" "$N" "$(date -u '+%F %T UTC')"
+
+echo "${B}Services${N}"
+for u in snapshot node clickhouse etl dashboard; do
+  IFS='|' read -r load act sub since mem < <(systemctl show "blockline-usdt-$u.service" \
+    -p LoadState -p ActiveState -p SubState -p ActiveEnterTimestamp -p MemoryCurrent | sort | cut -d= -f2- | paste -sd'|' |
+    awk -F"|" '{ print $3 "|" $2 "|" $5 "|" $1 "|" $4 }')   # sorted: ActiveEnter, ActiveState, Load, Memory, Sub
+  if [ "$load" != loaded ]; then row "$u" "$([ $u = snapshot ] && [ $verified = 1 ] && echo 0 || echo 2)" "not installed"; continue; fi
+  case $act in
+    active) lvl=0 ;;
+    activating) lvl=1 ;;
+    # the snapshot is a oneshot: inactive once it has done its work
+    inactive) lvl=$([ $u = snapshot ] && [ $verified = 1 ] && echo 0 || echo 2) ;;
+    *) lvl=2 ;;
+  esac
+  memtxt=$([[ $mem =~ ^[0-9]+$ ]] && awk -v b="$mem" 'BEGIN { printf " · %.1f GB", b/1e9 }')
+  row "$u" $lvl "$act ($sub)" "${since:+since $since}$memtxt"
+done
+
+echo; echo "${B}Snapshot${N}"
+if [ $verified = 1 ]; then
+  row verified 0 yes "$(jq -r '.verified // ""' "$NODE/.snapshot-verified" 2>/dev/null)"
+elif [ -r "$STATE/snapshot.json" ] && [ "$(jq -r .status "$STATE/snapshot.json")" = streaming ]; then
+  row stream 1 "$(jq -r '"\(.percent // 0)% · \(.rate_mb_s // "-") MB/s · ETA \(.eta_hours // "-") h"' "$STATE/snapshot.json")"
+  err=$(jq -r '.last_error // empty' "$STATE/snapshot.json"); [ -n "$err" ] && row "last error" - "$err"
+elif [ -r "$STATE/snapshot.json" ] && [ "$(jq -r .status "$STATE/snapshot.json")" = failed ]; then
+  row stream 2 "failed: $(jq -r '.error // "?"' "$STATE/snapshot.json")"
+else
+  row verified 1 no "(bin/usdt-up downloads it)"
+fi
+
+echo; echo "${B}Node${N}"
+read -r n ts < <(block "$HTTP" wallet) || true
+if [ -z "${n:-}" ]; then
+  if systemctl -q is-active blockline-usdt-node; then row api 1 "not answering yet" "(opening the database?)"
+  elif [ $verified = 1 ]; then row api 2 down
+  else row api 1 "waits for the snapshot"; fi
+else
+  behind=$(( $(date +%s) - ts / 1000 ))
+  solid=$(block "$SOLID" walletsolidity | cut -d' ' -f1)
+  info=$(curl -sf -m 5 "http://$HTTP/wallet/getnodeinfo")
+  if [ "$behind" -lt "$SYNC_BEHIND_S" ]; then row state 0 synced "(${behind}s behind the clock)"
+  else row state 1 "catching up: $(hm $behind) behind" "(≈ $(num $((behind / 3))) blocks to go)"; fi
+  row head - "$(num "$n")"
+  row solidified - "${solid:+$(num "$solid")}" "${solid:+($((n - solid)) behind head)}"
+  peers=$(jq -r '.currentConnectCount // 0' <<<"$info" 2>/dev/null)
+  row peers "$([ "${peers:-0}" -gt 0 ] && echo 0 || echo 2)" "${peers:-?} connected" "$(jq -r '"· \(.activeConnectCount // "?") active"' <<<"$info" 2>/dev/null)"
+  row version - "$(jq -r '.configNodeInfo.codeVersion // "?"' <<<"$info" 2>/dev/null)"
+fi
+
+echo; echo "${B}ClickHouse and ETL${N}"
+if curl -sf -m 3 "http://$CH/?query=SELECT%201" >/dev/null; then row clickhouse 0 "answers on $CH"
+else row clickhouse 2 "not answering on $CH"; fi
+if [ -r "$STATE/etl.json" ]; then
+  upd=$(jq -r '.updated // empty' "$STATE/etl.json")
+  age=$(( $(date +%s) - $(date -ud "${upd:-1970-01-01}" +%s) ))
+  err=$(jq -r '.error // empty' "$STATE/etl.json")
+  if [ -n "$err" ]; then lvl=2; elif [ $age -gt 300 ]; then lvl=1; else lvl=0; fi
+  row etl $lvl "$(jq -r '"\(.state // "?") · block \(.live.last_block // "?") · \(.live.lag_blocks // "?") behind solidified"' "$STATE/etl.json")" \
+    "(report $(hm $age) ago)"
+  [ -n "$err" ] && row error 2 "$err"
+else
+  row etl 1 "no report yet"
+fi
+
+echo; echo "${B}Host${N}"
+read -r used_pct free_b < <(df --output=pcent,avail -B1 "$ROOT" | tail -1 | tr -d '%')
+row disk "$([ "$used_pct" -ge 90 ] && echo 2 || { [ "$used_pct" -ge 80 ] && echo 1 || echo 0; })" \
+  "${used_pct}% used" "$(awk -v b="$free_b" 'BEGIN { printf "(%.2f TB free)", b/1e12 }')"
+row memory - "$(awk '/MemTotal/ { t = $2 } /MemAvailable/ { a = $2 } END { printf "%.0f GB used of %.0f GB", (t - a) / 1e6, t / 1e6 }' /proc/meminfo)"
+row load - "$(cut -d' ' -f1-3 /proc/loadavg)"
+if curl -sf -m 3 http://127.0.0.1:8288/api/status >/dev/null; then
+  row "status page" 0 "http://127.0.0.1:8288" "(ssh -L 8288:127.0.0.1:8288 debian@<server>)"
+else row "status page" 1 "not answering on 127.0.0.1:8288"; fi
+
+echo
+case $worst in 0) echo "${G}${B}OK${N}" ;; 1) echo "${Y}${B}WORKING${N}" ;; *) echo "${R}${B}ATTENTION${N}" ;; esac
+exit $worst

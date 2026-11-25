@@ -194,14 +194,15 @@ Value types, used everywhere below:
 Ordering: every row carries `block`, `tx_index` (position in the block) and, for logs, `log_index` normalised to the
 position within the transaction. Rows are keyed by (block, tx_index, log_index).
 
-Because the history is extracted only once, the field lists below are reviewed against the investigation and
+The investigation field review of 2026-11-23 added columns and tables beyond this list (docs/ETL.md, "Investigation
+fields"); its sign-off is the owner's. Because the history is extracted only once, the field lists below are reviewed against the investigation and
 clustering needs before the history run starts (Phase 0), and include every field of the transaction and receipt that
 a later feature might plausibly need for these contract types.
 
 | Table | Rows | Key columns |
 |---|---|---|
 | `block_headers` | every block from 0 | block, block_id, parent_hash, ts, witness, tx_count |
-| `usdt_transfers` | every `Transfer` log of the USDT contract (successful transactions only: a reverted transaction emits no logs), including mint (`from` = 0x0) and burn (`to` = 0x0) | block, ts, tx_hash, tx_index, log_index, from, to, amount (uint64, 6 decimals), method (`transfer` / `transferFrom` / `issue` / `redeem` / other), caller (tx owner), kind (`transfer` / `fee` / `mint` / `burn`), spoofed (bool, 6) |
+| `usdt_transfers` | every `Transfer` log of the USDT contract (successful transactions only: a reverted transaction emits no logs), including mint (`from` = 0x0) and burn (`to` = 0x0) | block, ts, tx_hash, tx_index, log_index, from, to, amount (uint64, 6 decimals), method (`transfer` / `transferFrom` / `issue` / `redeem` / other), caller (tx owner), kind (`transfer` / `fee` / `mint` / `burn`), spoofed (bool, 6; set at extraction, docs/ETL.md) |
 | `usdt_failed_calls` | failed transactions whose call targets the USDT contract directly, decoded from call data | block, tx_hash, tx_index, method, from/owner, to, amount (uint256), result, call_data_ok (bool) |
 | `usdt_tx_costs` | per USDT transaction | call_value (amount in the call data, before any fee), energy_used, origin_energy_usage (part paid by the contract deployer), energy_from_stake, energy_fee (TRX burned), energy_penalty_total, net_fee, fee_limit, inferred energy source |
 | `usdt_admin` | `AddedBlackList`, `RemovedBlackList`, `DestroyedBlackFunds`, `Issue`, `Redeem`, `Deprecate`, `Params`, `Pause`, `Unpause`, `OwnershipTransferred`; plus one row for the constructor's initial supply (no event) | block, tx_hash, tx_index, log_index, event, address (from the topic for blacklist and destroy events), amount (uint256) |
@@ -519,7 +520,7 @@ which the forks are paused and the host disk is near its peak.
 
 - [ ] The Tronscan-verified source matches the deployed bytecode (read from the local node).
 - [ ] Initial supply in the constructor arguments of the creation transaction.
-- [ ] Current `basisPointsRate`, `maximumFee` and `deprecated` flag.
+- [x] Current `basisPointsRate`, `maximumFee` and `deprecated` flag: 0, 0, false; not paused (2026-11-23, at the head).
 - [ ] Token flow of one GasFree transaction: `transferFrom` or a wallet-contract transfer, and what `from` shows.
 - [ ] `getnodeinfo` exposes the solidified block number.
 - [ ] The java-tron settings that keep a node peer-less, and that a restart with them leaves the solidified height

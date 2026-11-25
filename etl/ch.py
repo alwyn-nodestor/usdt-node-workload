@@ -22,8 +22,8 @@ URL = os.environ.get("BLOCKLINE_USDT_CH", "http://127.0.0.1:18123/")
 DB = os.environ.get("BLOCKLINE_USDT_CH_DB", "usdt")
 SCHEMA_SQL = Path(__file__).with_name("schema.sql")
 ADDR = {"from_addr", "to_addr", "caller", "owner", "spender", "address", "activator", "delegator", "receiver",
-        "account", "creator", "witness"}
-HASH = {"tx_hash", "block_id", "parent_hash", "tx_trie_root", "internal_hash"}
+        "account", "creator", "witness", "entry_contract", "token_addr", "contract_addr"}
+HASH = {"tx_hash", "block_id", "parent_hash", "tx_trie_root", "internal_hash", "code_hash", "witness_signature"}  # hex -> bytes
 TABLES = [t for t in SCHEMAS if t != "usdt_transfers"] + ["usdt_legs"]   # what lives in ClickHouse
 
 

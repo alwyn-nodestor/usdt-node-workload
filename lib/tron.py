@@ -74,6 +74,47 @@ ADMIN_EVENTS = {topic(sig): sig.split("(")[0] for sig in [
     "Pause()", "Unpause()", "OwnershipTransferred(address,address)",
 ]}
 
+def hex_of(b58):
+    """'T…' -> '41…' hex, checksum verified. Used to write the constant tables below in their readable form."""
+    n = 0
+    for c in b58:
+        n = n * 58 + B58.index(c)
+    raw = n.to_bytes(25, "big")
+    if hashlib.sha256(hashlib.sha256(raw[:21]).digest()).digest()[:4] != raw[21:]:
+        raise ValueError(f"bad checksum: {b58}")
+    return raw[:21].hex()
+
+
+# Other TRC-20 tokens whose Transfer logs are kept (usdt.token_transfers): the stablecoins USDT is swapped into or
+# out of when layering (USDD after Tether freezes, A7A5 for sanctions evasion), and WTRX (DEX legs). Symbol and
+# decimals read from each contract on the local node, 2026-11-23. Adding one later needs a re-extraction of its range.
+WATCHED_TOKENS = {hex_of(a): (sym, dec) for a, sym, dec in [
+    ("TPYmHEhy5n8TCEfYGqW2rPxsghSfzghPDn", "USDD", 18),     # USDD (original contract)
+    ("TXDk8mbtRbXeYuMNS83CfKPaYYT8XWv9Hz", "USDD", 18),     # USDD (2025 contract)
+    ("TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8", "USDC", 6),
+    ("TUpMhErZL2fhh4sVNULAbNKLokS4GjC1F4", "TUSD", 18),
+    ("TMz2SWatiAtZVVcH2ebpsbVtYwUPT9EdjH", "BUSD", 18),
+    ("TLeVfrdym8RoJreJ23dAGyfJDygRtiWKBZ", "A7A5", 6),      # ruble stablecoin, Garantex / Grinex (OFAC 2025-08-14)
+    ("TNUC9Qb1rRpS5CbWLmNMxXBjyFoydXjWFR", "WTRX", 6),
+]}
+
+# Contracts whose every log and every direct call is kept raw (usdt.watched_logs / usdt.watched_calls).
+WATCHED_CONTRACTS = {hex_of(a): name for a, name in [
+    # USDT's owner() (verified on the node): every blacklist / destroy / issue goes through it as submit -> confirm
+    # -> execute, so a pending freeze, and its target in the submit call data, is visible before AddedBlackList.
+    ("TBPxhVAsuzoFnKyXtc1o2UySEydPHgATto", "usdt_owner_multisig"),
+    # GasFree controller (proxy): its events name the real user behind a GasFree transfer, whose USDT Transfer
+    # shows only the per-user GasFree contract as `from`.
+    ("TFFAMQLZybALaLb4uxHA9RBE7pxhUAjF3U", "gasfree_controller"),
+]}
+
+# Transaction types whose signatures are kept when signed by a non-owner permission or by several keys
+# (usdt.tx_signers), so the key that actually signed can be recovered later: value moves and control changes.
+# Resource delegation is left out on purpose: rental platforms sign millions of those with active permissions,
+# and they say nothing about who owns the funds (resource_delegations still carries permission_id).
+SIGNER_TYPES = {"TransferContract", "TransferAssetContract", "TriggerSmartContract", "AccountPermissionUpdateContract",
+                "AccountUpdateContract", "CreateSmartContract", "AccountCreateContract"}
+
 # 4-byte selectors of the calls the USDT contract takes directly
 SELECTORS = {
     "a9059cbb": "transfer",       # transfer(address,uint256)
